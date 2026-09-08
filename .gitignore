@@ -1,0 +1,31 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environment
+.env
+.env.local
+.env.prod
+.venv/
+env/
+venv/
+ENV/
+
+# Pydantic / mypy
+.mypy_cache/
+
+# Pytest / Coverage
+.pytest_cache/
+coverage.xml
+htmlcov/
+.coverage
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# macOS
+.DS_Store
