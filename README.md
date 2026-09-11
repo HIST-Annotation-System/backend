@@ -1,54 +1,56 @@
 # Backend API (FastAPI)
 
-Projekt backendowy dla systemu zbudowany w oparciu o framework **FastAPI**. Zarządzanie zależnościami oraz środowiskiem odbywa się za pomocą narzędzia **uv**.
+Backend project for the system built on the **FastAPI** framework. Dependency and environment management is handled by **uv** (inside Docker).
 
-## Struktura Katalogów
+## Directory Structure
 
-Główny kod aplikacji znajduje się w folderze `app/`:
+The main application code is located in the `app/` folder:
 
-- `core/` - Główne konfiguracje aplikacji (np. ustawienia Pydantic, CORS).
-- `dependencies/` - Zależności (Dependency Injection) współdzielone przez różne endpointy.
-- `exceptions/` - Niestandardowe wyjątki i globalne handlery błędów.
-- `models/` - Modele bazodanowe (np. SQLAlchemy, SQLModel).
-- `repositories/` - Warstwa abstrakcji dostępu do danych (Data Access Layer).
-- `routers/` - Definicje endpointów API pogrupowane funkcjonalnie.
-- `schemas/` - Modele Pydantic (DTO) służące do walidacji danych wejściowych i wyjściowych.
-- `services/` - Logika biznesowa aplikacji, odseparowana od routerów i zapytań do bazy.
+- `core/` - Main application configuration (e.g., Pydantic settings, CORS).
+- `dependencies/` - Dependencies (Dependency Injection) shared across different endpoints.
+- `exceptions/` - Custom exceptions and global error handlers.
+- `models/` - Database models (e.g., SQLAlchemy, SQLModel).
+- `repositories/` - Data Access Layer (DAL) abstraction.
+- `routers/` - API endpoint definitions grouped functionally.
+- `schemas/` - Pydantic models (DTOs) used for input and output data validation.
+- `services/` - Business logic of the application, separated from routers and database queries.
 
-## Wymagania
+## Requirements
 
-- Python 3.12+ (lub wersja obsługiwana w projekcie)
-- [uv](https://github.com/astral-sh/uv) - szybki menedżer pakietów Pythona.
+- [Docker](https://www.docker.com/) and Docker Compose
 
-## Instalacja i Uruchomienie lokalne
+## Installation and Local Setup
 
-1. **Sklonuj repozytorium** i przejdź do folderu backendu.
-2. **Utwórz lokalny plik środowiskowy:**
-   Skopiuj `.env.example` do `.env.local` i dostosuj zmienne (np. upewnij się, że porty dla CORS pokrywają się z lokalnym adresem Twojego frontendu).
-3. **Zainstaluj zależności za pomocą uv:**
+1. **Clone the repository** and navigate to the backend folder.
+2. **Create a local environment file:**
+   Copy `.env.example` to `.env` and adjust the variables if necessary. 
+3. **Run the environment using Docker Compose:**
    ```bash
-   uv sync
+   docker compose up -d --build
    ```
-4. **Uruchom serwer deweloperski:**
-   Do uruchamiania używamy FastAPI CLI:
+   This will start both the FastAPI server and the MinIO object storage.
+   - API Server will be available at: `http://localhost:8000`
+   - MinIO API will be available at: `http://localhost:9000`
+   - MinIO Web UI will be available at: `http://localhost:9001`
+
+4. **Stop the environment:**
    ```bash
-   uv run fastapi dev app/main.py
+   docker compose down
    ```
-   Serwer nasłuchuje domyślnie na porcie `8000`.
 
-## Dokumentacja API
+## API Documentation
 
-Po uruchomieniu serwera, interaktywna dokumentacja Swagger UI jest dostępna pod adresem:
+Once the server is running, the interactive Swagger UI documentation is available at:
 - [http://localhost:8000/docs](http://localhost:8000/docs)
 
-Alternatywna dokumentacja (ReDoc):
+Alternative documentation (ReDoc):
 - [http://localhost:8000/redoc](http://localhost:8000/redoc)
 
-## Zmienne Środowiskowe
+## Environment Variables
 
-Konfiguracja aplikacji wczytywana jest dzięki `pydantic-settings`. 
-Priorytety wczytywania:
-1. Zmienne eksportowane do terminala (systemowe)
-2. Plik `.env.local` (domyślnie w trybie dev)
+Application configuration is loaded using `pydantic-settings`. 
+Loading priorities:
+1. Environment variables passed via `docker-compose.yml` or system terminal
+2. `.env` file
 
-Aby dodać nowe zmienne, dodaj je w pliku `app/core/config.py` do klasy `Settings`, a następnie ustaw ich wartości w `.env.local`.
+To add new variables, add them to the `Settings` class in `app/core/config.py`, and then set their values in your `.env` file.
