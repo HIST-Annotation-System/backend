@@ -1,0 +1,129 @@
+import threading
+import uuid
+from collections import OrderedDict
+from dataclasses import dataclass
+
+import openslide
+from openslide.deepzoom import DeepZoomGenerator
+
+from app.exceptions.errors import ConflictError, InvalidInputError, NotFoundError
+from app.models.slide import Slide, SlideStatus
+from app.repositories.slides import SlideRepository
+from app.schemas.slides import REGION_MAX_SIZE, RegionQuery, SlideDetail, SlideRead
+from app.services.slide_analysis import encode_jpeg, encode_png, open_slide_file, read_region_image
+from app.services.slide_files import SlideFileService
+from app.services.storage import ObjectStorage
+
+THUMBNAIL_OBJECT_KEY = "slides/{slide_id}/thumbnail.jpg"
+DZI_FORMAT = "jpeg"
+DZI_TILE_SIZE = 254
+DZI_OVERLAP = 1
+SLIDE_HANDLE_CACHE_SIZE = 16
+SLIDE_NOT_FOUND = "Slide {slide_id} does not exist."
+SLIDE_NOT_READY = "Slide {slide_id} is not ready (status: {status})."
+TILE_NOT_FOUND = "Tile {level}/{col}_{row} does not exist."
+REGION_OUTSIDE_SLIDE = "The requested region lies outside the slide."
+
+
+@dataclass(frozen=True)
+class OpenedSlide:
+    slide: openslide.AbstractSlide
+    deepzoom: DeepZoomGenerator
+
+
+class SlideHandleCache:
+    """Bounded LRU cache of opened slides keyed by the immutable slide id.
+
+    A resource cache, not application state: a miss simply re-opens the slide. Evicted entries are
+    only dereferenced, never closed - OpenSlide forbids closing a handle while another thread reads
+    it, and openslide-python closes it once the last request lets go of it.
+    """
+
+    def __init__(self, max_size: int = SLIDE_HANDLE_CACHE_SIZE) -> None:
+        self._max_size = max_size
+        self._entries: OrderedDict[uuid.UUID, OpenedSlide] = OrderedDict()
+        self._lock = threading.Lock()
+
+    def __len__(self) -> int:
+        return len(self._entries)
+
+    def get(self, slide_id: uuid.UUID) -> OpenedSlide | None:
+        with self._lock:
+            entry = self._entries.get(slide_id)
+            if entry is not None:
+                self._entries.move_to_end(slide_id)
+            return entry
+
+    def put(self, slide_id: uuid.UUID, entry: OpenedSlide) -> None:
+        with self._lock:
+            self._entries[slide_id] = entry
+            self._entries.move_to_end(slide_id)
+            while len(self._entries) > self._max_size:
+                self._entries.popitem(last=False)
+
+
+def require_slide(slides: SlideRepository, slide_id: uuid.UUID, *, ready: bool = False) -> Slide:
+    slide = slides.get(slide_id)
+    if slide is None:
+        raise NotFoundError(SLIDE_NOT_FOUND.format(slide_id=slide_id))
+    if ready and slide.status != SlideStatus.READY:
+        raise ConflictError(SLIDE_NOT_READY.format(slide_id=slide_id, status=slide.status))
+    return slide
+
+
+class SlideService:
+    """Slide metadata, thumbnails, Deep Zoom tiles and region crops."""
+
+    def __init__(
+        self,
+        slides: SlideRepository,
+        storage: ObjectStorage,
+        files: SlideFileService,
+        handles: SlideHandleCache,
+    ) -> None:
+        self._slides = slides
+        self._storage = storage
+        self._files = files
+        self._handles = handles
+
+    def list_slides(self) -> list[SlideRead]:
+        return [SlideRead.model_validate(slide) for slide in self._slides.list_all()]
+
+    def get_slide(self, slide_id: uuid.UUID) -> SlideDetail:
+        return SlideDetail.model_validate(require_slide(self._slides, slide_id))
+
+    def get_thumbnail(self, slide_id: uuid.UUID) -> bytes:
+        require_slide(self._slides, slide_id, ready=True)
+        return self._storage.get_bytes(THUMBNAIL_OBJECT_KEY.format(slide_id=slide_id))
+
+    def get_dzi(self, slide_id: uuid.UUID) -> str:
+        return self._open(slide_id).deepzoom.get_dzi(DZI_FORMAT)
+
+    def get_tile(self, slide_id: uuid.UUID, level: int, col: int, row: int) -> bytes:
+        deepzoom = self._open(slide_id).deepzoom
+        if not 0 <= level < deepzoom.level_count:
+            raise NotFoundError(TILE_NOT_FOUND.format(level=level, col=col, row=row))
+        cols, rows = deepzoom.level_tiles[level]
+        if not (0 <= col < cols and 0 <= row < rows):
+            raise NotFoundError(TILE_NOT_FOUND.format(level=level, col=col, row=row))
+        return encode_jpeg(deepzoom.get_tile(level, (col, row)))
+
+    def export_region(self, slide_id: uuid.UUID, query: RegionQuery) -> bytes:
+        slide = self._open(slide_id).slide
+        slide_width, slide_height = slide.dimensions
+        width = min(query.width, slide_width - query.x)
+        height = min(query.height, slide_height - query.y)
+        if width <= 0 or height <= 0:
+            raise InvalidInputError(REGION_OUTSIDE_SLIDE)
+        max_size = min(query.max_size, REGION_MAX_SIZE)
+        return encode_png(read_region_image(slide, query.x, query.y, width, height, max_size))
+
+    def _open(self, slide_id: uuid.UUID) -> OpenedSlide:
+        # Cache hits never touch the database (SQLAlchemy sessions connect lazily).
+        opened = self._handles.get(slide_id)
+        if opened is None:
+            handle = open_slide_file(self._files.entry_path(require_slide(self._slides, slide_id, ready=True)))
+            deepzoom = DeepZoomGenerator(handle, tile_size=DZI_TILE_SIZE, overlap=DZI_OVERLAP, limit_bounds=True)
+            opened = OpenedSlide(slide=handle, deepzoom=deepzoom)
+            self._handles.put(slide_id, opened)
+        return opened

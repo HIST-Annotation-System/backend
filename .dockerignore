@@ -1,0 +1,11 @@
+# Keep the build context small and free of secrets; the api service bind-mounts the source at runtime.
+.git
+.venv
+.slide-cache
+.env
+.env.local
+.env.prod
+examples
+**/__pycache__
+.pytest_cache
+.mypy_cache
