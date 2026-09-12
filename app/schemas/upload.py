@@ -3,9 +3,9 @@ from typing import Annotated
 
 from pydantic import BaseModel, Field
 
-S3_MAX_PARTS = 10_000
+BUCKET_MAX_PARTS = 10_000
 
-PartNumber = Annotated[int, Field(gt=0, le=S3_MAX_PARTS)]
+PartNumber = Annotated[int, Field(gt=0, le=BUCKET_MAX_PARTS)]
 
 
 class StartUploadRequest(BaseModel):

@@ -143,8 +143,8 @@ The main variables are listed in `.env.example`:
 | Variable | Purpose |
 |---|---|
 | `DATABASE_URL` | PostgreSQL connection (`postgresql+psycopg://...`) |
-| `S3_ENDPOINT` / `S3_PUBLIC_ENDPOINT` | Object storage endpoint used by the backend / by browsers for presigned URLs |
-| `S3_ACCESS_KEY`, `S3_SECRET_KEY`, `S3_BUCKET_NAME` | Object storage credentials and bucket |
+| `BUCKET_ENDPOINT` / `BUCKET_PUBLIC_ENDPOINT` | Object storage endpoint used by the backend / by browsers for presigned URLs |
+| `BUCKET_ACCESS_KEY`, `BUCKET_SECRET_KEY`, `BUCKET_NAME` | Object storage credentials and bucket |
 | `SLIDE_CACHE_DIR` | Directory holding local copies of slides |
 
 Only deployment-specific values are settings. Fixed parameters (Deep Zoom tile size, thumbnail size, tissue

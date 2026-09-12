@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-S3_REGION = "us-east-1"
+
 PRESIGNED_URL_EXPIRATION_SECONDS = 3600
 STORAGE_UNAVAILABLE = "Object storage is unavailable."
 
@@ -55,10 +55,15 @@ def _create_client(settings: Settings, endpoint_url: str) -> S3Client:
     return boto3.client(
         "s3",
         endpoint_url=endpoint_url,
-        aws_access_key_id=settings.S3_ACCESS_KEY,
-        aws_secret_access_key=settings.S3_SECRET_KEY,
-        region_name=S3_REGION,
-        config=Config(signature_version="s3v4"),
+        aws_access_key_id=settings.BUCKET_ACCESS_KEY,
+        aws_secret_access_key=settings.BUCKET_SECRET_KEY,
+        region_name=settings.BUCKET_REGION,
+        config=Config(
+            signature_version="s3v4",
+            # GCS's S3 API rejects the aws-chunked uploads with CRC32 trailers that boto3 sends by default.
+            request_checksum_calculation="when_required",
+            response_checksum_validation="when_required",
+        ),
     )
 
 
@@ -66,9 +71,9 @@ class ObjectStorageService:
     """MinIO/S3 storage. Presigned URLs are signed for the endpoint browsers reach (signing is offline)."""
 
     def __init__(self, settings: Settings) -> None:
-        self._client = _create_client(settings, settings.S3_ENDPOINT)
-        self._presign_client = _create_client(settings, settings.S3_PUBLIC_ENDPOINT or settings.S3_ENDPOINT)
-        self._bucket = settings.S3_BUCKET_NAME
+        self._client = _create_client(settings, settings.BUCKET_ENDPOINT)
+        self._presign_client = _create_client(settings, settings.BUCKET_PUBLIC_ENDPOINT or settings.BUCKET_ENDPOINT)
+        self._bucket = settings.BUCKET_NAME
 
     def ensure_bucket(self) -> None:
         with _storage_errors():
