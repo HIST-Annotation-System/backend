@@ -1,145 +1,125 @@
+from __future__ import annotations
+
 import logging
-from botocore.exceptions import ClientError
-from app.core.config import settings
-from app.exceptions.storage import (
-    BucketConfigurationError,
-    PresignedUrlError,
-    FileUploadError,
-    MultipartUploadError,
-)
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
+from pathlib import Path
+from typing import TYPE_CHECKING, Protocol
+
+import boto3
+from botocore.config import Config
+from botocore.exceptions import BotoCoreError, ClientError
+
+from app.core.config import Settings
+from app.exceptions.errors import StorageError
+
+if TYPE_CHECKING:
+    from mypy_boto3_s3 import S3Client
 
 logger = logging.getLogger(__name__)
 
-class StorageService:
-    def __init__(self, s3_client):
-        self.s3_client = s3_client
-        self.bucket_name = settings.S3_BUCKET_NAME
-        
-        self._ensure_bucket_exists()
 
-    def _ensure_bucket_exists(self) -> None:
-        try:
-            self.s3_client.head_bucket(Bucket=self.bucket_name)
-        except ClientError as e:
-            error_code = e.response.get("Error", {}).get("Code")
-            if error_code == "404":
-                logger.info(f"Bucket {self.bucket_name} does not exist. Creating it...")
-                self.s3_client.create_bucket(Bucket=self.bucket_name)
-            else:
-                logger.error(f"Error checking/creating bucket {self.bucket_name}: {e}")
-                raise BucketConfigurationError(str(e))
+PRESIGNED_URL_EXPIRATION_SECONDS = 3600
+STORAGE_UNAVAILABLE = "Object storage is unavailable."
 
-    def get_presigned_url(self, object_name: str, expiration: int = 3600) -> str:
-        """
-        Generate a presigned URL to share an S3 object.
-        Used for frontend to access patches.
-        """
-        try:
-            response = self.s3_client.generate_presigned_url(
-                'get_object',
-                Params={
-                    'Bucket': self.bucket_name,
-                    'Key': object_name
-                },
-                ExpiresIn=expiration
-            )
-            return response
-        except ClientError as e:
-            logger.error(f"Error generating presigned URL for {object_name}: {e}")
-            raise PresignedUrlError(str(e))
 
-    def upload_file(self, file_path: str, object_name: str) -> bool:
-        """Uploads file to a bucket."""
-        try:
-            self.s3_client.upload_file(file_path, self.bucket_name, object_name)
-            return True
-        except ClientError as e:
-            logger.error(f"Error uploading {file_path} to {object_name}: {e}")
-            raise FileUploadError(str(e))
+class ObjectStorage(Protocol):
+    """Object storage used by the services (MinIO/S3 in the app, a local fake in tests)."""
 
-class StorageUploadService:
-    def __init__(self, s3_client):
-        self.s3_client = s3_client
-        self.bucket_name = settings.S3_BUCKET_NAME
-        self._ensure_bucket_exists()
+    def create_multipart_upload(self, key: str) -> str: ...
 
-    def _ensure_bucket_exists(self) -> None:
-        try:
-            self.s3_client.head_bucket(Bucket=self.bucket_name)
-        except ClientError as e:
-            error_code = e.response.get("Error", {}).get("Code")
-            if error_code == "404":
-                logger.info(f"Bucket {self.bucket_name} does not exist. Creating it...")
-                self.s3_client.create_bucket(Bucket=self.bucket_name)
-            else:
-                logger.error(f"Error checking/creating bucket {self.bucket_name}: {e}")
+    def get_presigned_part_urls(self, key: str, upload_id: str, part_numbers: Iterable[int]) -> dict[int, str]: ...
 
-    def _fix_url(self, url: str) -> str:
-        if "http://minio:9000" in url:
-            return url.replace("http://minio:9000", "http://127.0.0.1:9000")
-        return url
+    def complete_multipart_upload(self, key: str, upload_id: str, etags: dict[int, str]) -> None: ...
 
-    def create_multipart_upload(self, object_name: str) -> str:
-        try:
-            response = self.s3_client.create_multipart_upload(
-                Bucket=self.bucket_name,
-                Key=object_name
-            )
-            return response['UploadId']
-        except ClientError as e:
-            logger.error(f"Error creating multipart upload for {object_name}: {e}")
-            raise MultipartUploadError(str(e))
+    def head_size(self, key: str) -> int: ...
 
-    def get_presigned_urls_for_multipart(self, object_name: str, upload_id: str, total_parts: int, expiration: int = 3600) -> list[str]:
-        urls = []
-        for part_number in range(1, total_parts + 1):
+    def download_file(self, key: str, path: Path) -> None: ...
+
+    def put_bytes(self, key: str, data: bytes, content_type: str) -> None: ...
+
+    def get_bytes(self, key: str) -> bytes: ...
+
+
+@contextmanager
+def _storage_errors() -> Iterator[None]:
+    """Log storage failures and turn them into StorageError (clients only get a generic message)."""
+    try:
+        yield
+    except (BotoCoreError, ClientError) as exc:
+        logger.error("Object storage operation failed: %s", exc)
+        raise StorageError(STORAGE_UNAVAILABLE) from exc
+
+
+def _create_client(settings: Settings, endpoint_url: str) -> S3Client:
+    return boto3.client(
+        "s3",
+        endpoint_url=endpoint_url,
+        aws_access_key_id=settings.BUCKET_ACCESS_KEY,
+        aws_secret_access_key=settings.BUCKET_SECRET_KEY,
+        region_name=settings.BUCKET_REGION,
+        config=Config(
+            signature_version="s3v4",
+            # GCS's S3 API rejects the aws-chunked uploads with CRC32 trailers that boto3 sends by default.
+            request_checksum_calculation="when_required",
+            response_checksum_validation="when_required",
+        ),
+    )
+
+
+class ObjectStorageService:
+    """MinIO/S3 storage. Presigned URLs are signed for the endpoint browsers reach (signing is offline)."""
+
+    def __init__(self, settings: Settings) -> None:
+        self._client = _create_client(settings, settings.BUCKET_ENDPOINT)
+        self._presign_client = _create_client(settings, settings.BUCKET_PUBLIC_ENDPOINT or settings.BUCKET_ENDPOINT)
+        self._bucket = settings.BUCKET_NAME
+
+    def ensure_bucket(self) -> None:
+        with _storage_errors():
             try:
-                url = self.s3_client.generate_presigned_url(
-                    ClientMethod='upload_part',
-                    Params={
-                        'Bucket': self.bucket_name,
-                        'Key': object_name,
-                        'UploadId': upload_id,
-                        'PartNumber': part_number
-                    },
-                    ExpiresIn=expiration
-                )
-                urls.append(self._fix_url(url))
-            except ClientError as e:
-                logger.error(f"Error generating presigned URL for part {part_number} of {object_name}: {e}")
-                raise PresignedUrlError(str(e))
-        return urls
+                self._client.head_bucket(Bucket=self._bucket)
+            except ClientError as exc:
+                if exc.response.get("Error", {}).get("Code") not in ("404", "NoSuchBucket"):
+                    raise
+                self._client.create_bucket(Bucket=self._bucket)
 
-    def refresh_presigned_urls_for_parts(self, object_name: str, upload_id: str, pending_parts: list[int], expiration: int = 3600) -> dict[int, str]:
-        urls = {}
-        for part_number in pending_parts:
-            try:
-                url = self.s3_client.generate_presigned_url(
-                    ClientMethod='upload_part',
-                    Params={
-                        'Bucket': self.bucket_name,
-                        'Key': object_name,
-                        'UploadId': upload_id,
-                        'PartNumber': part_number
-                    },
-                    ExpiresIn=expiration
-                )
-                urls[part_number] = self._fix_url(url)
-            except ClientError as e:
-                logger.error(f"Error refreshing presigned URL for part {part_number} of {object_name}: {e}")
-                raise PresignedUrlError(str(e))
-        return urls
+    def create_multipart_upload(self, key: str) -> str:
+        with _storage_errors():
+            return self._client.create_multipart_upload(Bucket=self._bucket, Key=key)["UploadId"]
 
-    def complete_multipart_upload(self, object_name: str, upload_id: str, parts: list[dict]) -> dict:
-        try:
-            sorted_parts = sorted(parts, key=lambda i: i['PartNumber'])
-            response = self.s3_client.complete_multipart_upload(
-                Bucket=self.bucket_name,
-                Key=object_name,
+    def get_presigned_part_urls(self, key: str, upload_id: str, part_numbers: Iterable[int]) -> dict[int, str]:
+        with _storage_errors():
+            return {
+                part: self._presign_client.generate_presigned_url(
+                    ClientMethod="upload_part",
+                    Params={"Bucket": self._bucket, "Key": key, "UploadId": upload_id, "PartNumber": part},
+                    ExpiresIn=PRESIGNED_URL_EXPIRATION_SECONDS,
+                )
+                for part in part_numbers
+            }
+
+    def complete_multipart_upload(self, key: str, upload_id: str, etags: dict[int, str]) -> None:
+        with _storage_errors():
+            self._client.complete_multipart_upload(
+                Bucket=self._bucket,
+                Key=key,
                 UploadId=upload_id,
-                MultipartUpload={'Parts': sorted_parts}
+                MultipartUpload={"Parts": [{"PartNumber": part, "ETag": etags[part]} for part in sorted(etags)]},
             )
-            return response
-        except ClientError as e:
-            logger.error(f"Error completing multipart upload for {object_name}: {e}")
-            raise MultipartUploadError(str(e))
+
+    def head_size(self, key: str) -> int:
+        with _storage_errors():
+            return self._client.head_object(Bucket=self._bucket, Key=key)["ContentLength"]
+
+    def download_file(self, key: str, path: Path) -> None:
+        with _storage_errors():
+            self._client.download_file(self._bucket, key, str(path))
+
+    def put_bytes(self, key: str, data: bytes, content_type: str) -> None:
+        with _storage_errors():
+            self._client.put_object(Bucket=self._bucket, Key=key, Body=data, ContentType=content_type)
+
+    def get_bytes(self, key: str) -> bytes:
+        with _storage_errors():
+            return self._client.get_object(Bucket=self._bucket, Key=key)["Body"].read()

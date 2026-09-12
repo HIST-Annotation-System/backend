@@ -1,38 +1,48 @@
-from pydantic import BaseModel
-from typing import List
+import uuid
+from typing import Annotated
+
+from pydantic import BaseModel, Field
+
+BUCKET_MAX_PARTS = 10_000
+
+PartNumber = Annotated[int, Field(gt=0, le=BUCKET_MAX_PARTS)]
+
 
 class StartUploadRequest(BaseModel):
-    filename: str
+    filename: str = Field(min_length=1, max_length=255)
+
 
 class StartUploadResponse(BaseModel):
+    slide_id: uuid.UUID
     upload_id: str
-    key: str
+
 
 class PresignedUrlsRequest(BaseModel):
+    slide_id: uuid.UUID
     upload_id: str
-    key: str
-    total_parts: int
+    total_parts: PartNumber
+
 
 class PresignedUrlsResponse(BaseModel):
-    urls: List[str]
+    urls: list[str]
+
 
 class RefreshUrlsRequest(BaseModel):
+    slide_id: uuid.UUID
     upload_id: str
-    key: str
-    pending_parts: List[int]
+    pending_parts: list[PartNumber] = Field(min_length=1)
+
 
 class RefreshUrlsResponse(BaseModel):
     urls: dict[int, str]
 
+
 class UploadPart(BaseModel):
-    PartNumber: int
+    PartNumber: PartNumber
     ETag: str
 
-class CompleteUploadRequest(BaseModel):
-    upload_id: str
-    key: str
-    parts: List[UploadPart]
 
-class CompleteUploadResponse(BaseModel):
-    success: bool
-    message: str
+class CompleteUploadRequest(BaseModel):
+    slide_id: uuid.UUID
+    upload_id: str
+    parts: list[UploadPart] = Field(min_length=1)

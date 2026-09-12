@@ -12,6 +12,9 @@ env/
 venv/
 ENV/
 
+# Local slide cache (re-creatable copies of slides from object storage)
+.slide-cache/
+
 # Pydantic / mypy
 .mypy_cache/
 

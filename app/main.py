@@ -1,24 +1,52 @@
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.core.config import settings
-from app.routers import upload
 
-app = FastAPI(
-    title=settings.PROJECT_NAME,
-    openapi_url=f"{settings.API_V1_STR}/openapi.json",
-)
+from app.core.config import Settings, settings
+from app.dependencies.resources import AppResources, build_resources
+from app.exceptions.errors import register_exception_handlers
+from app.routers import annotations, slides, upload
 
-if settings.BACKEND_CORS_ORIGINS:
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=[str(origin).rstrip("/") for origin in settings.BACKEND_CORS_ORIGINS],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
+
+def create_app(resources_factory: Callable[[Settings], AppResources] = build_resources) -> FastAPI:
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        # Infrastructure only: no slide is opened or selected at startup.
+        resources = resources_factory(settings)
+        app.state.resources = resources
+        try:
+            yield
+        finally:
+            resources.close()
+
+    app = FastAPI(
+        title=settings.PROJECT_NAME,
+        openapi_url=f"{settings.API_V1_STR}/openapi.json",
+        lifespan=lifespan,
     )
 
-app.include_router(upload.router, prefix=f"{settings.API_V1_STR}/upload", tags=["Upload"])
+    if settings.BACKEND_CORS_ORIGINS:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=[str(origin).rstrip("/") for origin in settings.BACKEND_CORS_ORIGINS],
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
 
-@app.get("/health", tags=["Health"])
-def health_check() -> dict[str, str]:
-    return {"status": "ok", "environment": settings.ENVIRONMENT}
+    register_exception_handlers(app)
+
+    app.include_router(upload.router, prefix=f"{settings.API_V1_STR}/upload", tags=["Upload"])
+    app.include_router(slides.router, prefix=f"{settings.API_V1_STR}/slides", tags=["Slides"])
+    app.include_router(annotations.router, prefix=settings.API_V1_STR, tags=["Annotations"])
+
+    @app.get("/health", tags=["Health"])
+    def health_check() -> dict[str, str]:
+        return {"status": "ok", "environment": settings.ENVIRONMENT}
+
+    return app
+
+
+app = create_app()

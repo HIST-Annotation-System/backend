@@ -5,8 +5,36 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "alembic>=1.19.2",
     "boto3>=1.43.89",
-    "boto3-stubs>=1.43.89",
     "fastapi[standard]>=0.141.1",
+    "numpy>=2.5.3",
+    "openslide-bin>=4.0.1.2",
+    "openslide-python>=1.4.6",
+    "pillow>=12.3.0",
+    "psycopg[binary]>=3.3.5",
     "pydantic-settings>=2.15.0",
+    "scipy>=1.18.1",
+    "sqlalchemy>=2.0.52",
 ]
+
+[dependency-groups]
+dev = [
+    "boto3-stubs[s3]>=1.43.93",
+    "mypy>=2.3.1",
+    "pytest>=9.1.1",
+]
+
+[tool.mypy]
+strict = true
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = ["scipy.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-m 'not slow'"
+markers = ["slow: integration tests that use the large example slide (run with -m slow)"]
