@@ -4,6 +4,7 @@ import os
 import shutil
 import uuid
 import zipfile
+from collections.abc import Callable
 from pathlib import Path, PurePosixPath
 
 from app.exceptions.errors import InvalidInputError
@@ -31,11 +32,14 @@ class SlideFileService:
         """The file OpenSlide should open for `slide`, downloading the slide first if needed."""
         return find_slide_entry(self.materialize(slide.id, slide.storage_key))
 
-    def materialize(self, slide_id: uuid.UUID, storage_key: str) -> Path:
+    def materialize(
+        self, slide_id: uuid.UUID, storage_key: str, on_progress: Callable[[int], None] | None = None
+    ) -> Path:
         """Ensure the slide's files exist in the cache and return their directory.
 
         The download happens in a temporary directory that is renamed atomically, so concurrent workers
-        never see a partial copy; if another worker finished first, its copy is kept.
+        never see a partial copy; if another worker finished first, its copy is kept. `on_progress`,
+        when given, is called with each chunk's byte count as the file downloads (see `ObjectStorage`).
         """
         slide_dir = self._cache_dir / str(slide_id)
         if slide_dir.is_dir():
@@ -46,10 +50,10 @@ class SlideFileService:
         try:
             filename = PurePosixPath(storage_key).name
             if filename.lower().endswith(ZIP_SUFFIX):
-                self._storage.download_file(storage_key, archive)
+                self._storage.download_file(storage_key, archive, on_progress)
                 extract_zip_safely(archive, temp_dir)
             else:
-                self._storage.download_file(storage_key, temp_dir / filename)
+                self._storage.download_file(storage_key, temp_dir / filename, on_progress)
             try:
                 os.replace(temp_dir, slide_dir)
             except OSError:
@@ -59,6 +63,10 @@ class SlideFileService:
             shutil.rmtree(temp_dir, ignore_errors=True)
             archive.unlink(missing_ok=True)
         return slide_dir
+
+    def purge(self, slide_id: uuid.UUID) -> None:
+        """Removes the slide's local cache directory, if any (called when the slide itself is deleted)."""
+        shutil.rmtree(self._cache_dir / str(slide_id), ignore_errors=True)
 
 
 def find_slide_entry(directory: Path) -> Path:

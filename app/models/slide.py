@@ -40,6 +40,9 @@ class Slide(Base):
         index=True,
     )
     error_message: Mapped[str | None] = mapped_column(Text)
+    # 0-100 while downloading the file during ingestion; None before/after (upload progress is
+    # tracked client-side, and there's nothing left to report once the slide is ready/failed).
+    ingest_progress: Mapped[int | None]
     vendor: Mapped[str | None] = mapped_column(String(64))
     width: Mapped[int | None]
     height: Mapped[int | None]

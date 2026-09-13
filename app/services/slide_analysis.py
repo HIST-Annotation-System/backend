@@ -59,8 +59,30 @@ def encode_png(image: Image.Image) -> bytes:
     return buffer.getvalue()
 
 
-def render_thumbnail(slide: openslide.AbstractSlide) -> bytes:
-    return encode_jpeg(slide.get_thumbnail((THUMBNAIL_SIZE, THUMBNAIL_SIZE)))
+def render_thumbnail(slide: openslide.AbstractSlide, tissue_bbox: dict[str, int] | None) -> bytes:
+    """A square thumbnail centered on the detected tissue (the whole slide, still square, if none)."""
+    slide_width, slide_height = slide.dimensions
+    if tissue_bbox is None:
+        x, y, width, height = 0, 0, slide_width, slide_height
+    else:
+        x, y, width, height = tissue_bbox["x"], tissue_bbox["y"], tissue_bbox["width"], tissue_bbox["height"]
+    x0, y0, side = _square_crop(x, y, width, height, slide_width, slide_height)
+    return encode_jpeg(read_region_image(slide, x0, y0, side, side, THUMBNAIL_SIZE))
+
+
+def _square_crop(
+    x: int, y: int, width: int, height: int, slide_width: int, slide_height: int
+) -> tuple[int, int, int]:
+    """A square (x, y, side) centered on the given box, clamped to start within the slide.
+
+    `side` may still put the far edge past the slide's bounds for a very elongated box; reading past
+    the edge is safe (read_region_image paints it in the background colour), so this isn't clamped.
+    """
+    side = max(width, height, 1)
+    cx, cy = x + width / 2, y + height / 2
+    x0 = round(max(0.0, min(cx - side / 2, slide_width - side)))
+    y0 = round(max(0.0, min(cy - side / 2, slide_height - side)))
+    return x0, y0, side
 
 
 def detect_tissue_bbox(slide: openslide.AbstractSlide) -> dict[str, int] | None:

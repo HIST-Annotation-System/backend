@@ -1,5 +1,9 @@
+import logging
+
 from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
+
+logger = logging.getLogger("app.errors")
 
 
 class AppError(Exception):
@@ -28,9 +32,14 @@ class StorageError(AppError):
     status_code = status.HTTP_502_BAD_GATEWAY
 
 
-def _app_error_handler(_request: Request, exc: Exception) -> JSONResponse:
+def _app_error_handler(request: Request, exc: Exception) -> JSONResponse:
     if not isinstance(exc, AppError):
         raise exc
+    logger.warning(
+        "request rejected: %s",
+        exc.message,
+        extra={"path": request.url.path, "status_code": exc.status_code},
+    )
     return JSONResponse(status_code=exc.status_code, content={"detail": exc.message})
 
 

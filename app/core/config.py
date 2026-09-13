@@ -1,7 +1,8 @@
 from pathlib import Path
 from typing import Annotated, Any
 
-from pydantic import AnyUrl, BeforeValidator, PostgresDsn
+from pydantic import AnyUrl, BeforeValidator, PostgresDsn, computed_field
+from pydantic_core import MultiHostUrl
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -17,6 +18,7 @@ class Settings(BaseSettings):
     ENVIRONMENT: str = "development"
     PROJECT_NAME: str = "Backend API"
     API_V1_STR: str = "/api/v1"
+    LOG_LEVEL: str = "INFO"
     BACKEND_CORS_ORIGINS: Annotated[list[AnyUrl] | str, BeforeValidator(parse_cors)] = []
     BUCKET_ENDPOINT: str
     # Endpoint browsers use for presigned URLs (defaults to BUCKET_ENDPOINT).
@@ -25,11 +27,29 @@ class Settings(BaseSettings):
     BUCKET_SECRET_KEY: str
     BUCKET_NAME: str
     BUCKET_REGION: str
-    DATABASE_URL: PostgresDsn
+    # "localhost" + the published host port outside Docker; docker-compose overrides these to
+    # "db" + the container-internal port, so the same .env.local works in both setups.
+    POSTGRES_SERVER: str = "localhost"
+    POSTGRES_PORT: int = 5432
+    POSTGRES_USER: str
+    POSTGRES_PASSWORD: str
+    POSTGRES_DB: str
     # Local, re-creatable copies of slides (OpenSlide needs filesystem paths).
     SLIDE_CACHE_DIR: Path = Path(".slide-cache")
 
     model_config = SettingsConfigDict(env_file=".env.local", env_file_encoding="utf-8", extra="ignore")
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def DATABASE_URL(self) -> PostgresDsn:
+        return MultiHostUrl.build(  # type: ignore[return-value]
+            scheme="postgresql+psycopg",
+            username=self.POSTGRES_USER,
+            password=self.POSTGRES_PASSWORD,
+            host=self.POSTGRES_SERVER,
+            port=self.POSTGRES_PORT,
+            path=self.POSTGRES_DB,
+        )
 
 
 settings = Settings()

@@ -3,6 +3,8 @@ from fastapi import APIRouter, BackgroundTasks, status
 from app.dependencies.services import SlideIngestServiceDep, SlideUploadServiceDep
 from app.schemas.upload import (
     CompleteUploadRequest,
+    ImportFromStorageRequest,
+    ImportFromStorageResponse,
     PresignedUrlsRequest,
     PresignedUrlsResponse,
     RefreshUrlsRequest,
@@ -38,3 +40,15 @@ def complete_upload(
 ) -> None:
     service.complete_upload(req.slide_id, req.upload_id, {part.PartNumber: part.ETag for part in req.parts})
     background_tasks.add_task(ingest.ingest, req.slide_id)
+
+
+@router.post("/import-from-storage", response_model=ImportFromStorageResponse)
+def import_from_storage(
+    req: ImportFromStorageRequest,
+    background_tasks: BackgroundTasks,
+    service: SlideUploadServiceDep,
+    ingest: SlideIngestServiceDep,
+) -> ImportFromStorageResponse:
+    slide_id = service.import_from_storage(req.key)
+    background_tasks.add_task(ingest.ingest, slide_id)
+    return ImportFromStorageResponse(slide_id=slide_id)

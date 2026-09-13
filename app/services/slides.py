@@ -14,7 +14,10 @@ from app.services.slide_analysis import encode_jpeg, encode_png, open_slide_file
 from app.services.slide_files import SlideFileService
 from app.services.storage import ObjectStorage
 
-THUMBNAIL_OBJECT_KEY = "slides/{slide_id}/thumbnail.jpg"
+# "_square": distinct from the old "thumbnail.jpg" key so writing it is always a fresh object,
+# never an overwrite - some buckets have a retention policy that silently no-ops overwrites/deletes
+# of existing objects (write succeeds, content doesn't change) rather than erroring.
+THUMBNAIL_OBJECT_KEY = "slides/{slide_id}/thumbnail_square.jpg"
 DZI_FORMAT = "jpeg"
 DZI_TILE_SIZE = 254
 DZI_OVERLAP = 1
@@ -61,6 +64,10 @@ class SlideHandleCache:
             while len(self._entries) > self._max_size:
                 self._entries.popitem(last=False)
 
+    def evict(self, slide_id: uuid.UUID) -> None:
+        with self._lock:
+            self._entries.pop(slide_id, None)
+
 
 def require_slide(slides: SlideRepository, slide_id: uuid.UUID, *, ready: bool = False) -> Slide:
     slide = slides.get(slide_id)
@@ -91,6 +98,18 @@ class SlideService:
 
     def get_slide(self, slide_id: uuid.UUID) -> SlideDetail:
         return SlideDetail.model_validate(require_slide(self._slides, slide_id))
+
+    def rename_slide(self, slide_id: uuid.UUID, name: str) -> SlideRead:
+        slide = require_slide(self._slides, slide_id)
+        slide.name = name
+        return SlideRead.model_validate(self._slides.save(slide))
+
+    def delete_slide(self, slide_id: uuid.UUID) -> None:
+        slide = require_slide(self._slides, slide_id)
+        self._handles.evict(slide_id)
+        self._files.purge(slide_id)
+        self._storage.delete_objects([slide.storage_key, THUMBNAIL_OBJECT_KEY.format(slide_id=slide_id)])
+        self._slides.delete(slide)
 
     def get_thumbnail(self, slide_id: uuid.UUID) -> bytes:
         require_slide(self._slides, slide_id, ready=True)
