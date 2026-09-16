@@ -31,7 +31,20 @@ class AccountService:
             role=data.role,
             is_first_login=True
         )
-        return self.account_repo.create(account)
+        self.account_repo.create(account)
+        
+        # Create an empty profile immediately so admin can set can_upload and group_id
+        profile = AnnotatorProfile(
+            account_id=account.id,
+            first_name="",
+            last_name="",
+            can_upload=data.can_upload,
+            group_id=data.group_id
+        )
+        self.profile_repo.create(profile)
+        self.account_repo.update()
+        
+        return account
 
     def setup_profile(self, account_id: int, data: ProfileSetup) -> Account:
         account = self.get_account(account_id)
@@ -41,18 +54,25 @@ class AccountService:
         account.hashed_password = self.auth_service.get_password_hash(data.new_password)
         account.is_first_login = False
 
-        profile = AnnotatorProfile(
-            account_id=account.id,
-            first_name=data.first_name,
-            last_name=data.last_name,
-            can_upload=False,
-            group_id=data.group_id
-        )
+        if not account.profile:
+            # Fallback if profile wasn't created (e.g. older users)
+            account.profile = AnnotatorProfile(
+                account_id=account.id,
+                first_name=data.first_name,
+                last_name=data.last_name,
+                can_upload=False,
+                group_id=data.group_id
+            )
+            self.profile_repo.create(account.profile)
+        else:
+            account.profile.first_name = data.first_name
+            account.profile.last_name = data.last_name
+            if data.group_id is not None:
+                account.profile.group_id = data.group_id
         
         categories = self.profile_repo.get_categories_by_ids(data.category_ids)
-        profile.categories = categories
+        account.profile.categories = categories
         
-        self.profile_repo.create(profile)
         self.account_repo.update()
         return account
 

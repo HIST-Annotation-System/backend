@@ -8,6 +8,8 @@ class AccountCreate(BaseModel):
     username: str
     password: str
     role: Role = Role.ANNOTATOR
+    can_upload: bool = False
+    group_id: int | None = None
 
 
 class ProfileSetup(BaseModel):
