@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import Settings, settings
 from app.dependencies.resources import AppResources, build_resources
 from app.exceptions.errors import register_exception_handlers
-from app.routers import annotations, slides, upload
+from app.routers import annotations, auth, slides, upload, users
 
 
 def create_app(resources_factory: Callable[[Settings], AppResources] = build_resources) -> FastAPI:
@@ -38,6 +38,8 @@ def create_app(resources_factory: Callable[[Settings], AppResources] = build_res
 
     register_exception_handlers(app)
 
+    app.include_router(auth.router, prefix=f"{settings.API_V1_STR}/auth", tags=["Auth"])
+    app.include_router(users.router, prefix=f"{settings.API_V1_STR}/users", tags=["Users"])
     app.include_router(upload.router, prefix=f"{settings.API_V1_STR}/upload", tags=["Upload"])
     app.include_router(slides.router, prefix=f"{settings.API_V1_STR}/slides", tags=["Slides"])
     app.include_router(annotations.router, prefix=settings.API_V1_STR, tags=["Annotations"])

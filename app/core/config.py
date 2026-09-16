@@ -29,6 +29,13 @@ class Settings(BaseSettings):
     # Local, re-creatable copies of slides (OpenSlide needs filesystem paths).
     SLIDE_CACHE_DIR: Path = Path(".slide-cache")
 
+    # Authentication
+    JWT_SECRET: str
+    JWT_ALGORITHM: str
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
+    REFRESH_TOKEN_EXPIRE_DAYS: int = 7
+    ADMIN_PASSWORD: str
+
     model_config = SettingsConfigDict(env_file=".env.local", env_file_encoding="utf-8", extra="ignore")
 
 
