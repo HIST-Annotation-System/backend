@@ -44,21 +44,26 @@ def refresh_token(request: Request, response: Response, auth_service: AuthServic
     return TokenResponse(access_token=access_token, refresh_token=new_refresh_token_obj.token)
 
 
+from app.dependencies.resources import SessionDep
+
 @router.post("/setup-profile", response_model=TokenResponse)
 def setup_profile(
     request: ProfileSetup, 
     response: Response, 
     current_user: CurrentUserDep, 
     account_service: AccountServiceDep,
-    auth_service: AuthServiceDep
+    auth_service: AuthServiceDep,
+    session: SessionDep
 ) -> TokenResponse:
     if not current_user.is_first_login:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Profile already set up")
         
     account = account_service.setup_profile(current_user.id, request)
+    session.commit()
     
     access_token = auth_service.create_access_token(account.id, account.role.value)
     refresh_token_obj = auth_service.create_refresh_token(account.id)
+    session.commit()
     
     auth_service.set_token_cookies(response, access_token, refresh_token_obj.token)
     return TokenResponse(access_token=access_token, refresh_token=refresh_token_obj.token)
