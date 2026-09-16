@@ -7,6 +7,9 @@ x-backend-environment: &backend-environment
   BUCKET_REGION: ${BUCKET_REGION}
   DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
   SLIDE_CACHE_DIR: /var/lib/wsi-cache
+  JWT_SECRET: ${JWT_SECRET}
+  JWT_ALGORITHM: ${JWT_ALGORITHM}
+  ADMIN_PASSWORD: ${ADMIN_PASSWORD}
 
 services:
   api:

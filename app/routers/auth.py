@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 
 from app.dependencies.auth import AccountServiceDep, AuthServiceDep, CurrentUserDep
 from app.schemas.auth import LoginRequest, RefreshTokenRequest, TokenResponse
@@ -26,12 +26,16 @@ def login(request: LoginRequest, response: Response, auth_service: AuthServiceDe
 
 
 @router.post("/refresh", response_model=TokenResponse)
-def refresh_token(request: RefreshTokenRequest, response: Response, auth_service: AuthServiceDep) -> TokenResponse:
-    account = auth_service.verify_refresh_token(request.refresh_token)
+def refresh_token(request: Request, response: Response, auth_service: AuthServiceDep) -> TokenResponse:
+    refresh_token = request.cookies.get("refresh_token")
+    if not refresh_token:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing refresh token")
+        
+    account = auth_service.verify_refresh_token(refresh_token)
     if not account:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired refresh token")
 
-    auth_service.revoke_refresh_token(request.refresh_token)
+    auth_service.revoke_refresh_token(refresh_token)
     
     access_token = auth_service.create_access_token(account.id, account.role.value)
     new_refresh_token_obj = auth_service.create_refresh_token(account.id)

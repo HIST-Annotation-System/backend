@@ -3,12 +3,22 @@ from typing import Annotated
 from fastapi import APIRouter, Depends
 
 from app.dependencies.auth import AccountServiceDep, CurrentUserDep, RequireRole
-from app.models.account import Role
+from app.models.account import Account, Role
 from app.schemas.user import AccountCreate, AccountResponse, ProfileUpdate
 
 router = APIRouter()
 
 RequireAdmin = Annotated[CurrentUserDep, Depends(RequireRole(Role.ADMIN))]
+
+
+@router.get("/", response_model=list[AccountResponse])
+def get_all_accounts(current_admin: RequireAdmin, account_service: AccountServiceDep) -> list[Account]:
+    return account_service.account_repo.get_all()
+
+
+@router.get("/me", response_model=AccountResponse)
+def get_current_user_profile(current_user: CurrentUserDep) -> Account:
+    return current_user
 
 
 @router.post("/", response_model=AccountResponse)

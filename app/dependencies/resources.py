@@ -50,6 +50,7 @@ ResourcesDep = Annotated[AppResources, Depends(get_resources)]
 def get_session(resources: ResourcesDep) -> Iterator[Session]:
     with resources.session_factory() as session:
         yield session
+        session.commit()
 
 
 SessionDep = Annotated[Session, Depends(get_session)]

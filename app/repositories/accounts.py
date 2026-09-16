@@ -4,6 +4,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, joinedload
 
 from app.models.account import Account, RefreshToken
+from app.models.profile import AnnotatorProfile
 
 
 class AccountRepository:
@@ -13,19 +14,34 @@ class AccountRepository:
     def get_by_username(self, username: str) -> Account | None:
         return self.session.execute(
             select(Account)
-            .options(joinedload(Account.profile).joinedload(Account.profile.class_.group)) # Ensure profile loads
+            .options(
+                joinedload(Account.profile).joinedload(AnnotatorProfile.group),
+                joinedload(Account.profile).joinedload(AnnotatorProfile.categories),
+            )
             .where(Account.username == username)
-        ).scalar_one_or_none()
+        ).unique().scalar_one_or_none()
 
     def get_by_id(self, account_id: int) -> Account | None:
         return self.session.execute(
             select(Account)
             .options(
-                joinedload(Account.profile).joinedload(Account.profile.class_.group),
-                joinedload(Account.profile).joinedload(Account.profile.class_.categories),
+                joinedload(Account.profile).joinedload(AnnotatorProfile.group),
+                joinedload(Account.profile).joinedload(AnnotatorProfile.categories),
             )
             .where(Account.id == account_id)
-        ).scalar_one_or_none()
+        ).unique().scalar_one_or_none()
+
+    def get_all(self) -> list[Account]:
+        return list(
+            self.session.execute(
+                select(Account)
+                .options(
+                    joinedload(Account.profile).joinedload(AnnotatorProfile.group),
+                    joinedload(Account.profile).joinedload(AnnotatorProfile.categories),
+                )
+                .order_by(Account.username)
+            ).scalars().unique().all()
+        )
 
     def create(self, account: Account) -> Account:
         self.session.add(account)

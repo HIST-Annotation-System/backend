@@ -1,13 +1,11 @@
 import sys
+import bcrypt
 from sqlalchemy import select
 from sqlalchemy.orm import Session
-from passlib.context import CryptContext
 
 from app.core.config import settings
 from app.dependencies.resources import build_resources
 from app.models.account import Account, Role
-
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 def main():
     resources = build_resources(settings)
@@ -21,7 +19,7 @@ def main():
             sys.exit(0)
 
         password = settings.ADMIN_PASSWORD
-        hashed_password = pwd_context.hash(password)
+        hashed_password = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
 
         new_admin = Account(
             username="admin",

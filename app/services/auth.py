@@ -1,15 +1,13 @@
 import secrets
 from datetime import datetime, timedelta, timezone
 
+import bcrypt
 import fastapi
 from jose import JWTError, jwt
-from passlib.context import CryptContext
 
 from app.core.config import Settings
 from app.models.account import Account, RefreshToken
 from app.repositories.accounts import AccountRepository, RefreshTokenRepository
-
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 
 class AuthService:
@@ -19,10 +17,10 @@ class AuthService:
         self.refresh_token_repo = refresh_token_repo
 
     def verify_password(self, plain_password: str, hashed_password: str) -> bool:
-        return pwd_context.verify(plain_password, hashed_password)
+        return bcrypt.checkpw(plain_password.encode("utf-8"), hashed_password.encode("utf-8"))
 
     def get_password_hash(self, password: str) -> str:
-        return pwd_context.hash(password)
+        return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
 
     def create_access_token(self, subject: int, role: str) -> str:
         expire = datetime.now(timezone.utc) + timedelta(minutes=self.settings.ACCESS_TOKEN_EXPIRE_MINUTES)
