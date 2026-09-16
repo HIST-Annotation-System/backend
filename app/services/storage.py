@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
@@ -21,6 +23,25 @@ logger = logging.getLogger(__name__)
 
 PRESIGNED_URL_EXPIRATION_SECONDS = 3600
 STORAGE_UNAVAILABLE = "Object storage is unavailable."
+# Generous enough that a single request covers everything for a normal-sized bucket; the browser
+# still pages via next_token for buckets with more objects than this at one prefix level.
+BROWSE_PAGE_SIZE = 500
+
+
+@dataclass(frozen=True)
+class StorageObject:
+    key: str
+    size: int
+    last_modified: datetime
+
+
+@dataclass(frozen=True)
+class StoragePage:
+    """One page of a `list_objects` browse: subfolders (common prefixes) and objects."""
+
+    prefixes: list[str]
+    objects: list[StorageObject]
+    next_token: str | None
 
 
 class ObjectStorage(Protocol):
@@ -34,11 +55,19 @@ class ObjectStorage(Protocol):
 
     def head_size(self, key: str) -> int: ...
 
-    def download_file(self, key: str, path: Path) -> None: ...
+    def download_file(self, key: str, path: Path, on_progress: Callable[[int], None] | None = None) -> None: ...
 
     def put_bytes(self, key: str, data: bytes, content_type: str) -> None: ...
 
     def get_bytes(self, key: str) -> bytes: ...
+
+    def list_objects(self, prefix: str, continuation_token: str | None) -> StoragePage: ...
+
+    def get_presigned_get_url(self, key: str) -> str: ...
+
+    def delete_objects(self, keys: Iterable[str]) -> None: ...
+
+    def abort_multipart_uploads(self, key: str) -> None: ...
 
 
 @contextmanager
@@ -112,9 +141,11 @@ class ObjectStorageService:
         with _storage_errors():
             return self._client.head_object(Bucket=self._bucket, Key=key)["ContentLength"]
 
-    def download_file(self, key: str, path: Path) -> None:
+    def download_file(self, key: str, path: Path, on_progress: Callable[[int], None] | None = None) -> None:
+        # boto3 calls `on_progress` with the byte count transferred *since the last call* (a delta,
+        # not a running total), from whichever worker thread happened to finish that chunk.
         with _storage_errors():
-            self._client.download_file(self._bucket, key, str(path))
+            self._client.download_file(self._bucket, key, str(path), Callback=on_progress)
 
     def put_bytes(self, key: str, data: bytes, content_type: str) -> None:
         with _storage_errors():
@@ -123,3 +154,59 @@ class ObjectStorageService:
     def get_bytes(self, key: str) -> bytes:
         with _storage_errors():
             return self._client.get_object(Bucket=self._bucket, Key=key)["Body"].read()
+
+    def list_objects(self, prefix: str, continuation_token: str | None) -> StoragePage:
+        with _storage_errors():
+            if continuation_token:
+                response = self._client.list_objects_v2(
+                    Bucket=self._bucket,
+                    Prefix=prefix,
+                    Delimiter="/",
+                    MaxKeys=BROWSE_PAGE_SIZE,
+                    ContinuationToken=continuation_token,
+                )
+            else:
+                response = self._client.list_objects_v2(
+                    Bucket=self._bucket, Prefix=prefix, Delimiter="/", MaxKeys=BROWSE_PAGE_SIZE
+                )
+            objects = [
+                StorageObject(key=item["Key"], size=item["Size"], last_modified=item["LastModified"])
+                for item in response.get("Contents", [])
+                # GCS returns the prefix itself as a zero-byte object when it was created as a "folder".
+                if item["Key"] != prefix
+            ]
+            prefixes = [item["Prefix"] for item in response.get("CommonPrefixes", [])]
+            next_token = response.get("NextContinuationToken") if response.get("IsTruncated") else None
+            return StoragePage(prefixes=prefixes, objects=objects, next_token=next_token)
+
+    def get_presigned_get_url(self, key: str) -> str:
+        with _storage_errors():
+            return self._presign_client.generate_presigned_url(
+                ClientMethod="get_object",
+                Params={"Bucket": self._bucket, "Key": key},
+                ExpiresIn=PRESIGNED_URL_EXPIRATION_SECONDS,
+            )
+
+    def delete_objects(self, keys: Iterable[str]) -> None:
+        """Best-effort: a failure on one key (e.g. a race with an in-flight download of it) is logged,
+        not raised, so cleanup never blocks the caller from deleting the record that owned the file.
+        """
+        for key in keys:
+            try:
+                self._client.delete_object(Bucket=self._bucket, Key=key)
+            except (BotoCoreError, ClientError) as exc:
+                logger.warning("Failed to delete object %s: %s", key, exc)
+
+    def abort_multipart_uploads(self, key: str) -> None:
+        """Aborts any in-progress multipart upload for `key` (used when a browser upload is canceled).
+
+        Best-effort, like `delete_objects`: canceling should always let the caller drop the slide
+        record, even if the upload already completed or expired on the storage side.
+        """
+        try:
+            response = self._client.list_multipart_uploads(Bucket=self._bucket, Prefix=key)
+            for upload in response.get("Uploads", []):
+                if upload["Key"] == key:
+                    self._client.abort_multipart_upload(Bucket=self._bucket, Key=key, UploadId=upload["UploadId"])
+        except (BotoCoreError, ClientError) as exc:
+            logger.warning("Failed to abort multipart upload(s) for %s: %s", key, exc)

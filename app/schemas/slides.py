@@ -26,6 +26,7 @@ class SlideRead(BaseModel):
     original_filename: str
     status: SlideStatus
     error_message: str | None
+    ingest_progress: int | None
     vendor: str | None
     width: int | None
     height: int | None
@@ -40,6 +41,10 @@ class SlideRead(BaseModel):
 
 class SlideDetail(SlideRead):
     properties: dict[str, str]
+
+
+class SlideRenameRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
 
 
 class RegionQuery(BaseModel):

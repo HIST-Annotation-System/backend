@@ -46,3 +46,11 @@ class CompleteUploadRequest(BaseModel):
     slide_id: uuid.UUID
     upload_id: str
     parts: list[UploadPart] = Field(min_length=1)
+
+
+class ImportFromStorageRequest(BaseModel):
+    key: str = Field(min_length=1, max_length=1024)
+
+
+class ImportFromStorageResponse(BaseModel):
+    slide_id: uuid.UUID

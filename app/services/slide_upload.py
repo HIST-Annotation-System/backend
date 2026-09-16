@@ -22,6 +22,7 @@ MRXS_ZIP_REQUIRED = (
     "MRXS slides consist of a .mrxs file and a data folder - upload them together as a single .zip archive."
 )
 SLIDE_NOT_UPLOADING = "Slide {slide_id} is not accepting uploads."
+ALREADY_IMPORTED = "This file has already been imported as slide '{name}'."
 
 
 class SlideUploadService:
@@ -69,6 +70,40 @@ class SlideUploadService:
         slide.file_size_bytes = self._storage.head_size(slide.storage_key)
         slide.status = SlideStatus.PROCESSING
         self._slides.save(slide)
+
+    def cancel_upload(self, slide_id: uuid.UUID) -> None:
+        """Aborts an in-progress browser upload and drops the slide record created for it."""
+        slide = self._uploading_slide(slide_id)
+        self._storage.abort_multipart_uploads(slide.storage_key)
+        self._slides.delete(slide)
+
+    def import_from_storage(self, key: str) -> uuid.UUID:
+        """Registers an object already sitting in the bucket as a new slide, skipping the upload step."""
+        original = PurePosixPath(key).name
+        if not original:
+            raise InvalidInputError(UNSUPPORTED_FILE_TYPE.format(suffix=key))
+        stem, suffix = PurePosixPath(original).stem, PurePosixPath(original).suffix.lower()
+        if suffix == MRXS_SUFFIX:
+            raise InvalidInputError(MRXS_ZIP_REQUIRED)
+        if suffix not in ALLOWED_UPLOAD_SUFFIXES:
+            raise InvalidInputError(UNSUPPORTED_FILE_TYPE.format(suffix=suffix or original))
+
+        existing = self._slides.get_by_storage_key(key)
+        if existing is not None:
+            raise ConflictError(ALREADY_IMPORTED.format(name=existing.name))
+
+        slide_id = uuid.uuid4()
+        self._slides.save(
+            Slide(
+                id=slide_id,
+                name=stem or original,
+                original_filename=original,
+                storage_key=key,
+                file_size_bytes=self._storage.head_size(key),
+                status=SlideStatus.PROCESSING,
+            )
+        )
+        return slide_id
 
     def _uploading_slide(self, slide_id: uuid.UUID) -> Slide:
         slide = require_slide(self._slides, slide_id)

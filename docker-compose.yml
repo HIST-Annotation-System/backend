@@ -1,11 +1,8 @@
+# Every service below loads its config from .env.local via env_file (not ${VAR} interpolation),
+# so `docker compose up` works with no --env-file flag and no risk of silently blank credentials.
 x-backend-environment: &backend-environment
-  BUCKET_ENDPOINT: ${BUCKET_ENDPOINT}
-  BUCKET_PUBLIC_ENDPOINT: ${BUCKET_PUBLIC_ENDPOINT}
-  BUCKET_ACCESS_KEY: ${BUCKET_ACCESS_KEY}
-  BUCKET_SECRET_KEY: ${BUCKET_SECRET_KEY}
-  BUCKET_NAME: ${BUCKET_NAME}
-  BUCKET_REGION: ${BUCKET_REGION}
-  DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+  POSTGRES_SERVER: db
+  POSTGRES_PORT: 5432
   SLIDE_CACHE_DIR: /var/lib/wsi-cache
   JWT_SECRET: ${JWT_SECRET}
   JWT_ALGORITHM: ${JWT_ALGORITHM}
@@ -21,6 +18,7 @@ services:
       - .:/app
       # Kept outside the /app bind mount so cached slides never land in the repository.
       - slide_cache:/var/lib/wsi-cache
+    env_file: .env.local
     environment: *backend-environment
     depends_on:
       db:
@@ -31,6 +29,7 @@ services:
   migrate:
     build: .
     command: ["uv", "run", "alembic", "upgrade", "head"]
+    env_file: .env.local
     environment: *backend-environment
     depends_on:
       db:
@@ -40,22 +39,56 @@ services:
     image: postgres:17-alpine
     ports:
       # 5433 on the host avoids clashing with a natively installed PostgreSQL.
-      - "${POSTGRES_HOST_PORT}:5432"
+      - "${POSTGRES_HOST_PORT:-5433}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-    environment:
-      - POSTGRES_USER=${POSTGRES_USER}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-      - POSTGRES_DB=${POSTGRES_DB}
+    env_file: .env.local
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 5s
       timeout: 5s
       retries: 12
 
+  # --- Log aggregation stack: api/migrate log JSON to stdout, Promtail tails the containers'
+  # Docker logs and ships them to Loki, Grafana lets you search/filter them. ---
 
+  loki:
+    image: grafana/loki:3.1.0
+    ports:
+      - "3100:3100"
+    command: -config.file=/etc/loki/local-config.yaml
+    volumes:
+      - loki_data:/loki
 
+  promtail:
+    image: grafana/promtail:3.1.0
+    command: -config.file=/etc/promtail/config.yml
+    volumes:
+      - ./promtail-config.yml:/etc/promtail/config.yml:ro
+      # Promtail discovers and reads containers' logs straight from the Docker daemon.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      - loki
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    ports:
+      # 3001 on the host: this machine already has a native Grafana on 3000.
+      - "3001:3000"
+    environment:
+      # No login stack needed for a local dev tool; lock this down before exposing it anywhere else.
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+      - GF_AUTH_DISABLE_LOGIN_FORM=true
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/etc/grafana/dashboards:ro
+    depends_on:
+      - loki
 
 volumes:
   postgres_data:
   slide_cache:
+  loki_data:
+  grafana_data:

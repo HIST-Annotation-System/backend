@@ -5,9 +5,13 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import Settings, settings
+from app.core.logging import configure_logging
 from app.dependencies.resources import AppResources, build_resources
 from app.exceptions.errors import register_exception_handlers
-from app.routers import annotations, auth, slides, upload, users
+from app.middleware.request_logging import RequestLoggingMiddleware
+from app.routers import annotations, auth, slides, storage, upload, users
+
+configure_logging(settings.LOG_LEVEL)
 
 
 def create_app(resources_factory: Callable[[Settings], AppResources] = build_resources) -> FastAPI:
@@ -27,6 +31,8 @@ def create_app(resources_factory: Callable[[Settings], AppResources] = build_res
         lifespan=lifespan,
     )
 
+    app.add_middleware(RequestLoggingMiddleware)
+
     if settings.BACKEND_CORS_ORIGINS:
         app.add_middleware(
             CORSMiddleware,
@@ -43,6 +49,7 @@ def create_app(resources_factory: Callable[[Settings], AppResources] = build_res
     app.include_router(upload.router, prefix=f"{settings.API_V1_STR}/upload", tags=["Upload"])
     app.include_router(slides.router, prefix=f"{settings.API_V1_STR}/slides", tags=["Slides"])
     app.include_router(annotations.router, prefix=settings.API_V1_STR, tags=["Annotations"])
+    app.include_router(storage.router, prefix=f"{settings.API_V1_STR}/storage", tags=["Storage"])
 
     @app.get("/health", tags=["Health"])
     def health_check() -> dict[str, str]:

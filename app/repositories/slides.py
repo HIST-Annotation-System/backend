@@ -14,6 +14,9 @@ class SlideRepository:
     def get(self, slide_id: uuid.UUID) -> Slide | None:
         return self._session.get(Slide, slide_id)
 
+    def get_by_storage_key(self, storage_key: str) -> Slide | None:
+        return self._session.scalars(select(Slide).where(Slide.storage_key == storage_key)).first()
+
     def list_all(self) -> Sequence[Slide]:
         return self._session.scalars(select(Slide).order_by(Slide.created_at.desc())).all()
 
@@ -21,3 +24,7 @@ class SlideRepository:
         self._session.add(slide)
         self._session.commit()
         return slide
+
+    def delete(self, slide: Slide) -> None:
+        self._session.delete(slide)
+        self._session.commit()

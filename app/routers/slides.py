@@ -1,10 +1,10 @@
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Query, Response
+from fastapi import APIRouter, Query, Response, status
 
 from app.dependencies.services import SlideServiceDep
-from app.schemas.slides import RegionQuery, SlideDetail, SlideRead
+from app.schemas.slides import RegionQuery, SlideDetail, SlideRead, SlideRenameRequest
 from app.services.slide_analysis import MEDIA_TYPE_JPEG, MEDIA_TYPE_PNG
 
 MEDIA_TYPE_XML = "application/xml"
@@ -24,6 +24,16 @@ def list_slides(service: SlideServiceDep) -> list[SlideRead]:
 @router.get("/{slide_id}", response_model=SlideDetail)
 def get_slide(slide_id: uuid.UUID, service: SlideServiceDep) -> SlideDetail:
     return service.get_slide(slide_id)
+
+
+@router.patch("/{slide_id}", response_model=SlideRead)
+def rename_slide(slide_id: uuid.UUID, req: SlideRenameRequest, service: SlideServiceDep) -> SlideRead:
+    return service.rename_slide(slide_id, req.name)
+
+
+@router.delete("/{slide_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_slide(slide_id: uuid.UUID, service: SlideServiceDep) -> None:
+    service.delete_slide(slide_id)
 
 
 @router.get("/{slide_id}/image.dzi")
