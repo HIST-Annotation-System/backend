@@ -4,10 +4,6 @@ x-backend-environment: &backend-environment
   POSTGRES_SERVER: db
   POSTGRES_PORT: 5432
   SLIDE_CACHE_DIR: /var/lib/wsi-cache
-  JWT_SECRET: ${JWT_SECRET}
-  JWT_ALGORITHM: ${JWT_ALGORITHM}
-  ADMIN_PASSWORD: ${ADMIN_PASSWORD}
-  BACKEND_CORS_ORIGINS: ${BACKEND_CORS_ORIGINS}
 
 services:
   api:
