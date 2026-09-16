@@ -1,3 +1,5 @@
+import uuid
+
 from fastapi import APIRouter, BackgroundTasks, status
 
 from app.dependencies.services import SlideIngestServiceDep, SlideUploadServiceDep
@@ -40,6 +42,11 @@ def complete_upload(
 ) -> None:
     service.complete_upload(req.slide_id, req.upload_id, {part.PartNumber: part.ETag for part in req.parts})
     background_tasks.add_task(ingest.ingest, req.slide_id)
+
+
+@router.post("/{slide_id}/cancel", status_code=status.HTTP_204_NO_CONTENT)
+def cancel_upload(slide_id: uuid.UUID, service: SlideUploadServiceDep) -> None:
+    service.cancel_upload(slide_id)
 
 
 @router.post("/import-from-storage", response_model=ImportFromStorageResponse)

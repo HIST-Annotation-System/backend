@@ -71,6 +71,12 @@ class SlideUploadService:
         slide.status = SlideStatus.PROCESSING
         self._slides.save(slide)
 
+    def cancel_upload(self, slide_id: uuid.UUID) -> None:
+        """Aborts an in-progress browser upload and drops the slide record created for it."""
+        slide = self._uploading_slide(slide_id)
+        self._storage.abort_multipart_uploads(slide.storage_key)
+        self._slides.delete(slide)
+
     def import_from_storage(self, key: str) -> uuid.UUID:
         """Registers an object already sitting in the bucket as a new slide, skipping the upload step."""
         original = PurePosixPath(key).name

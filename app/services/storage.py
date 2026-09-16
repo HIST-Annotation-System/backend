@@ -67,6 +67,8 @@ class ObjectStorage(Protocol):
 
     def delete_objects(self, keys: Iterable[str]) -> None: ...
 
+    def abort_multipart_uploads(self, key: str) -> None: ...
+
 
 @contextmanager
 def _storage_errors() -> Iterator[None]:
@@ -194,3 +196,17 @@ class ObjectStorageService:
                 self._client.delete_object(Bucket=self._bucket, Key=key)
             except (BotoCoreError, ClientError) as exc:
                 logger.warning("Failed to delete object %s: %s", key, exc)
+
+    def abort_multipart_uploads(self, key: str) -> None:
+        """Aborts any in-progress multipart upload for `key` (used when a browser upload is canceled).
+
+        Best-effort, like `delete_objects`: canceling should always let the caller drop the slide
+        record, even if the upload already completed or expired on the storage side.
+        """
+        try:
+            response = self._client.list_multipart_uploads(Bucket=self._bucket, Prefix=key)
+            for upload in response.get("Uploads", []):
+                if upload["Key"] == key:
+                    self._client.abort_multipart_upload(Bucket=self._bucket, Key=key, UploadId=upload["UploadId"])
+        except (BotoCoreError, ClientError) as exc:
+            logger.warning("Failed to abort multipart upload(s) for %s: %s", key, exc)
