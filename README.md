@@ -44,7 +44,8 @@ performance cache that any worker may rebuild at any time.
    - `db` - PostgreSQL 17 (published on host port **5433** to avoid clashing with a local PostgreSQL),
    - `migrate` - a one-shot container running `alembic upgrade head`,
    - `api` - the FastAPI server at `http://localhost:8000`,
-   - `minio` - object storage (API `http://localhost:9000`, Web UI `http://localhost:9001`).
+   - `minio` - object storage (API `http://localhost:9000`, Web UI `http://localhost:9001`),
+   - `loki` / `promtail` / `grafana` - log aggregation (see [Logs](#logs) below).
 
 4. **Stop the environment:**
    ```bash
@@ -57,7 +58,7 @@ performance cache that any worker may rebuild at any time.
 docker compose up -d db minio      # infrastructure only
 uv sync
 uv run alembic upgrade head
-uv run fastapi dev app/main.py
+uv run uvicorn app.main:app --reload --no-access-log
 ```
 
 ## Slides
@@ -123,6 +124,28 @@ uv run mypy app          # strict type checking
 uv run mypy --explicit-package-bases tests
 ```
 
+## Logs
+
+The app logs one JSON line per event to stdout (see `app/core/logging.py`): every request gets a
+`request completed` (or `request failed`) line with method, path, status code and duration, tagged
+with a `request_id` that's also echoed back as the `X-Request-ID` response header, so all log lines
+for one request can be correlated. Set `LOG_LEVEL=DEBUG` in `.env.local` for more verbose output
+while diagnosing an issue.
+
+`docker compose up` also starts a small aggregation stack so you don't have to `docker compose logs`
+by hand:
+
+- **Promtail** tails every container's Docker logs (via the Docker socket) and ships them to Loki.
+- **Loki** stores and indexes them (by `service` and `level`).
+- **Grafana** (`http://localhost:3001`, no login required) has Loki pre-configured as a datasource,
+  with a starter **"Application Logs"** dashboard (log volume by level, an errors/warnings feed, and
+  the full `api` log stream). Use **Explore** for ad-hoc [LogQL](https://grafana.com/docs/loki/latest/query/)
+  queries, e.g. `{service="api"} | json | status_code >= 500` or `{service="api"} |= "<request-id>"`
+  to pull every line for one request.
+
+This stack is meant for local/dev use (anonymous admin access, filesystem storage) - lock it down
+(auth, retention, real storage) before running it anywhere it'd be exposed.
+
 ## Database migrations
 
 ```bash
@@ -142,10 +165,15 @@ The main variables are listed in `.env.example`:
 
 | Variable | Purpose |
 |---|---|
-| `DATABASE_URL` | PostgreSQL connection (`postgresql+psycopg://...`) |
+| `POSTGRES_SERVER`, `POSTGRES_PORT`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` | PostgreSQL connection; `DATABASE_URL` is built from these (see `app/core/config.py`). Default server/port (`localhost`/`5433`) target the host-published port; docker-compose overrides them to `db`/`5432` for the api/migrate containers |
+| `POSTGRES_HOST_PORT` | Host port Postgres is published on (compose only, defaults to `5433`) |
 | `BUCKET_ENDPOINT` / `BUCKET_PUBLIC_ENDPOINT` | Object storage endpoint used by the backend / by browsers for presigned URLs |
 | `BUCKET_ACCESS_KEY`, `BUCKET_SECRET_KEY`, `BUCKET_NAME` | Object storage credentials and bucket |
 | `SLIDE_CACHE_DIR` | Directory holding local copies of slides |
+
+`docker-compose.yml` loads every service's config straight from `.env.local` via `env_file:`, so
+`docker compose up` needs no `--env-file` flag and can't silently see blank credentials the way
+shell-style `${VAR}` interpolation could.
 
 Only deployment-specific values are settings. Fixed parameters (Deep Zoom tile size, thumbnail size, tissue
 detection thresholds, limits, error messages) are UPPER_CASE constants at the top of the module that uses them.
