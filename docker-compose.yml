@@ -10,6 +10,7 @@ x-backend-environment: &backend-environment
   JWT_SECRET: ${JWT_SECRET}
   JWT_ALGORITHM: ${JWT_ALGORITHM}
   ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+  BACKEND_CORS_ORIGINS: ${BACKEND_CORS_ORIGINS}
 
 services:
   api:
