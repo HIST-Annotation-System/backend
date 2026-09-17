@@ -1,23 +1,34 @@
 import logging
+import math
 import threading
 import uuid
 from collections.abc import Callable
+from pathlib import Path
 
 import openslide
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.exceptions.errors import AppError
+from app.exceptions.errors import AppError, InvalidInputError
 from app.models.slide import Slide, SlideStatus
 from app.repositories.slides import SlideRepository
-from app.services.slide_analysis import MEDIA_TYPE_JPEG, detect_tissue_bbox, open_slide_file, render_thumbnail
+from app.services.slide_analysis import (
+    MEDIA_TYPE_JPEG,
+    NOT_A_SLIDE,
+    detect_tissue_bbox,
+    open_slide_file,
+    render_thumbnail,
+)
 from app.services.slide_files import SlideFileService, find_slide_entry
+from app.services.slide_formats import FORMATS_BY_SUFFIX, PYRAMID_REQUIRED_ABOVE_PX
 from app.services.slides import THUMBNAIL_OBJECT_KEY
 from app.services.storage import ObjectStorage
 
 logger = logging.getLogger(__name__)
 
-VENDOR_PLAIN_IMAGE = "image"
 PROCESSING_FAILED = "Unexpected error while processing the slide."
+VENDOR_MISMATCH = "'{filename}' contains {vendor} data, which doesn't match its extension."
+MISSING_MPP = "The slide has no resolution (MPP) metadata."
+NOT_PYRAMIDAL = "The slide is not pyramidal (e.g. a flat or OME-TIFF). Convert it to a pyramidal tiled TIFF or SVS."
 
 
 def _to_float(value: str | None) -> float | None:
@@ -25,6 +36,25 @@ def _to_float(value: str | None) -> float | None:
         return float(value) if value is not None else None
     except ValueError:
         return None
+
+
+def _require_matching_vendor(entry: Path) -> None:
+    """The file's content must be what its extension claims (e.g. a generic TIFF renamed .svs is rejected)."""
+    vendor = openslide.OpenSlide.detect_format(entry)
+    slide_format = FORMATS_BY_SUFFIX.get(entry.suffix.lower())
+    if vendor is None or slide_format is None:
+        raise InvalidInputError(NOT_A_SLIDE.format(filename=entry.name))
+    if vendor not in slide_format.vendors:
+        raise InvalidInputError(VENDOR_MISMATCH.format(filename=entry.name, vendor=vendor))
+
+
+def _require_usable_slide(properties: dict[str, str], dimensions: tuple[int, int], level_count: int) -> None:
+    for key in (openslide.PROPERTY_NAME_MPP_X, openslide.PROPERTY_NAME_MPP_Y):
+        mpp = _to_float(properties.get(key))
+        if mpp is None or not math.isfinite(mpp) or mpp <= 0:
+            raise InvalidInputError(MISSING_MPP)
+    if max(dimensions) > PYRAMID_REQUIRED_ABOVE_PX and level_count == 1:
+        raise InvalidInputError(NOT_PYRAMIDAL)
 
 
 class SlideIngestService:
@@ -64,15 +94,18 @@ class SlideIngestService:
     def _process(self, slide: Slide, slides: SlideRepository) -> None:
         # All fallible work happens before the slide is modified.
         slide_dir = self._files.materialize(slide.id, slide.storage_key, self._download_progress(slide, slides))
-        with open_slide_file(find_slide_entry(slide_dir)) as handle:
+        entry = find_slide_entry(slide_dir)
+        _require_matching_vendor(entry)
+        with open_slide_file(entry) as handle:
             properties = dict(handle.properties)
             width, height = handle.dimensions
             level_count = handle.level_count
+            _require_usable_slide(properties, (width, height), level_count)
             tissue_bbox = detect_tissue_bbox(handle)
             thumbnail = render_thumbnail(handle, tissue_bbox)
         self._storage.put_bytes(THUMBNAIL_OBJECT_KEY.format(slide_id=slide.id), thumbnail, MEDIA_TYPE_JPEG)
 
-        slide.vendor = properties.get(openslide.PROPERTY_NAME_VENDOR, VENDOR_PLAIN_IMAGE)
+        slide.vendor = properties.get(openslide.PROPERTY_NAME_VENDOR)
         slide.width, slide.height, slide.level_count = width, height, level_count
         slide.mpp_x = _to_float(properties.get(openslide.PROPERTY_NAME_MPP_X))
         slide.objective_power = _to_float(properties.get(openslide.PROPERTY_NAME_OBJECTIVE_POWER))

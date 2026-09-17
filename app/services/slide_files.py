@@ -9,18 +9,21 @@ from pathlib import Path, PurePosixPath
 
 from app.exceptions.errors import InvalidInputError
 from app.models.slide import Slide
-from app.services.storage import ObjectStorage
+from app.services.slide_formats import (
+    AMBIGUOUS_ARCHIVE,
+    ARCHIVE_SUFFIX,
+    DICOM_SUFFIX,
+    INDEX_SUFFIXES,
+    is_ignored_member,
+    validate_slide_members,
+)
+from app.services.storage import ObjectStorage, StorageObject
 
-ZIP_SUFFIX = ".zip"
-MRXS_SUFFIX = ".mrxs"
-# Formats made of an entry file plus companion files; they arrive as a .zip archive.
-MULTI_FILE_SLIDE_SUFFIXES = frozenset({MRXS_SUFFIX, ".vms"})
-MACOS_ARCHIVE_METADATA_DIR = "__MACOSX"
+FOLDER_SEPARATOR = "/"
 ZIP_MAX_UNCOMPRESSED_BYTES = 50 * 1024**3
 INVALID_ARCHIVE = "The uploaded file is not a valid ZIP archive."
 ARCHIVE_TOO_LARGE = "The archive is too large once extracted."
 UNSAFE_ARCHIVE_ENTRY = "Archive entry '{name}' has an unsafe path."
-AMBIGUOUS_ARCHIVE = "The archive must contain exactly one slide (for MRXS: the .mrxs file and its data folder)."
 
 
 class SlideFileService:
@@ -45,11 +48,13 @@ class SlideFileService:
         if slide_dir.is_dir():
             return slide_dir
         temp_dir = self._cache_dir / f"{slide_id}.tmp-{uuid.uuid4().hex}"
-        archive = temp_dir.with_name(f"{temp_dir.name}{ZIP_SUFFIX}")
+        archive = temp_dir.with_name(f"{temp_dir.name}{ARCHIVE_SUFFIX}")
         temp_dir.mkdir(parents=True)
         try:
             filename = PurePosixPath(storage_key).name
-            if filename.lower().endswith(ZIP_SUFFIX):
+            if storage_key.endswith(FOLDER_SEPARATOR):
+                self._download_folder(storage_key, temp_dir, on_progress)
+            elif filename.lower().endswith(ARCHIVE_SUFFIX):
                 self._storage.download_file(storage_key, archive, on_progress)
                 extract_zip_safely(archive, temp_dir)
             else:
@@ -64,38 +69,69 @@ class SlideFileService:
             archive.unlink(missing_ok=True)
         return slide_dir
 
+    def _download_folder(self, prefix: str, destination: Path, on_progress: Callable[[int], None] | None) -> None:
+        """Download an extracted multi-file slide, re-validating its layout (the folder may have changed)."""
+        members = list_folder_members(self._storage, prefix)
+        validate_slide_members(list(members))
+        root = destination.resolve()
+        for relative, member in members.items():
+            target = (root / relative).resolve()
+            if not target.is_relative_to(root):
+                raise InvalidInputError(UNSAFE_ARCHIVE_ENTRY.format(name=member.key))
+            target.parent.mkdir(parents=True, exist_ok=True)
+            self._storage.download_file(member.key, target, on_progress)
+
     def purge(self, slide_id: uuid.UUID) -> None:
         """Removes the slide's local cache directory, if any (called when the slide itself is deleted)."""
         shutil.rmtree(self._cache_dir / str(slide_id), ignore_errors=True)
 
 
+def list_folder_members(storage: ObjectStorage, prefix: str) -> dict[PurePosixPath, StorageObject]:
+    """The files under a storage folder keyed by path relative to it, without folder markers and archive metadata."""
+    members = {PurePosixPath(obj.key[len(prefix) :]): obj for obj in storage.iter_keys(prefix)}
+    return {
+        path: obj
+        for path, obj in members.items()
+        if not obj.key.endswith(FOLDER_SEPARATOR) and not is_ignored_member(path)
+    }
+
+
 def find_slide_entry(directory: Path) -> Path:
-    """A single file, or the one .mrxs/.vms file of a multi-file slide."""
-    files = [path for path in directory.rglob("*") if path.is_file()]
+    """The file OpenSlide opens: a single file, the index file of a multi-file slide, or a DICOM file."""
+    files = sorted(path for path in directory.rglob("*") if path.is_file())
     if len(files) == 1:
         return files[0]
-    entries = [path for path in files if path.suffix.lower() in MULTI_FILE_SLIDE_SUFFIXES]
+    entries = [path for path in files if path.suffix.lower() in INDEX_SUFFIXES]
     if len(entries) == 1:
         return entries[0]
+    # OpenSlide finds the rest of a DICOM series in the folder of whichever file it is given.
+    if files and all(path.suffix.lower() == DICOM_SUFFIX for path in files):
+        return files[0]
     raise InvalidInputError(AMBIGUOUS_ARCHIVE)
 
 
 def extract_zip_safely(archive: Path, destination: Path) -> None:
-    """Extract `archive` into `destination`, rejecting path traversal and oversized content."""
+    """Extract the multi-file slide in `archive` into `destination`.
+
+    Rejects archives that aren't exactly one multi-file slide, path traversal and oversized content;
+    archive metadata (see `is_ignored_member`) is not extracted.
+    """
     try:
         with zipfile.ZipFile(archive) as zip_file:
-            members = [
-                member
+            # Some Windows tools (e.g. PowerShell 5.1 Compress-Archive) write backslash separators.
+            entries = {
+                PurePosixPath(member.filename.replace("\\", "/")): member
                 for member in zip_file.infolist()
-                if not member.is_dir() and not member.filename.startswith(MACOS_ARCHIVE_METADATA_DIR)
-            ]
+                if not member.is_dir()
+            }
+            members = {path: member for path, member in entries.items() if not is_ignored_member(path)}
+            validate_slide_members(list(members))
             # ZipExtFile never yields more than the declared size, so the declared sizes bound the output.
-            if sum(member.file_size for member in members) > ZIP_MAX_UNCOMPRESSED_BYTES:
+            if sum(member.file_size for member in members.values()) > ZIP_MAX_UNCOMPRESSED_BYTES:
                 raise InvalidInputError(ARCHIVE_TOO_LARGE)
             root = destination.resolve()
-            for member in members:
-                # Some Windows tools (e.g. PowerShell 5.1 Compress-Archive) write backslash separators.
-                target = (root / member.filename.replace("\\", "/")).resolve()
+            for path, member in members.items():
+                target = (root / path).resolve()
                 if not target.is_relative_to(root):
                     raise InvalidInputError(UNSAFE_ARCHIVE_ENTRY.format(name=member.filename))
                 target.parent.mkdir(parents=True, exist_ok=True)

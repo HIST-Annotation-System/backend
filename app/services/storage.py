@@ -63,9 +63,13 @@ class ObjectStorage(Protocol):
 
     def list_objects(self, prefix: str, continuation_token: str | None) -> StoragePage: ...
 
+    def iter_keys(self, prefix: str) -> Iterator[StorageObject]: ...
+
     def get_presigned_get_url(self, key: str) -> str: ...
 
     def delete_objects(self, keys: Iterable[str]) -> None: ...
+
+    def delete_prefix(self, prefix: str) -> None: ...
 
     def abort_multipart_uploads(self, key: str) -> None: ...
 
@@ -187,6 +191,15 @@ class ObjectStorageService:
                 ExpiresIn=PRESIGNED_URL_EXPIRATION_SECONDS,
             )
 
+    def iter_keys(self, prefix: str) -> Iterator[StorageObject]:
+        """Every object under `prefix`, at any depth (unlike the one-level `list_objects` browse)."""
+        with _storage_errors():
+            for page in self._client.get_paginator("list_objects_v2").paginate(Bucket=self._bucket, Prefix=prefix):
+                for item in page.get("Contents", []):
+                    # GCS returns the prefix itself as a zero-byte object when it was created as a "folder".
+                    if item["Key"] != prefix:
+                        yield StorageObject(key=item["Key"], size=item["Size"], last_modified=item["LastModified"])
+
     def delete_objects(self, keys: Iterable[str]) -> None:
         """Best-effort: a failure on one key (e.g. a race with an in-flight download of it) is logged,
         not raised, so cleanup never blocks the caller from deleting the record that owned the file.
@@ -196,6 +209,17 @@ class ObjectStorageService:
                 self._client.delete_object(Bucket=self._bucket, Key=key)
             except (BotoCoreError, ClientError) as exc:
                 logger.warning("Failed to delete object %s: %s", key, exc)
+
+    def delete_prefix(self, prefix: str) -> None:
+        """Best-effort deletion of every object under `prefix`, like `delete_objects`.
+
+        Keys are listed up front, so deleting never shifts the listing under the paginator.
+        """
+        try:
+            keys = [obj.key for obj in self.iter_keys(prefix)]
+        except StorageError:
+            return
+        self.delete_objects(keys)
 
     def abort_multipart_uploads(self, key: str) -> None:
         """Aborts any in-progress multipart upload for `key` (used when a browser upload is canceled).

@@ -65,20 +65,28 @@ uv run uvicorn app.main:app --reload --no-access-log
 
 ### Supported formats
 
-Single-file formats (`.svs`, `.tif`, `.tiff`, `.ndpi`, `.scn`, `.bif`, `.svslide`) and plain images
-(`.jpg`, `.jpeg`, `.png`, `.bmp`) are uploaded as-is.
+Only formats the bundled OpenSlide reads natively are accepted (`app/services/slide_formats.py`), and every slide
+needs resolution metadata (MPP) and, above 10,000 px, a resolution pyramid. Anything else is rejected: by name
+when the upload starts, by content during ingestion (the slide ends `failed` with the reason).
 
-**MRXS (MIRAX) slides consist of a `.mrxs` file and a data folder with the same name.** Upload them as a single
-`.zip` archive containing both:
+| Kind | Formats | Upload as |
+|---|---|---|
+| Single file | Aperio `.svs`, pyramidal tiled `.tif`/`.tiff`, Hamamatsu `.ndpi`, Leica `.scn`, Ventana `.bif`, Sakura `.svslide`, Zeiss `.czi` | The file itself, never inside an archive |
+| Multi-file | MIRAX `.mrxs`, Hamamatsu `.vms`/`.vmu`, DICOM WSI `.dcm` | One `.zip` with exactly one slide and nothing else |
+
+Archive layouts (`__MACOSX/`, `.DS_Store` and `Thumbs.db` are ignored):
 
 ```
-CMU-1.zip
-├─ CMU-1.mrxs
-└─ CMU-1/
-   ├─ Slidedat.ini
-   ├─ Index.dat
-   └─ Data0000.dat ...
+CMU-1.zip                slide.zip                series.zip
+├─ CMU-1.mrxs            ├─ slide.vms             └─ series/
+└─ CMU-1/                ├─ slide.opt                ├─ level-0.dcm
+   ├─ Slidedat.ini       └─ slide_*.jpg              └─ level-1.dcm ...
+   └─ *.dat              (.vmu: index + .ngr files in one folder; DICOM files need the .dcm extension)
 ```
+
+Not supported: plain images (`.jpg`, `.png`, `.bmp`, ...), flat or OME-TIFF, stripped TIFF, Trestle, Olympus
+`.vsi`, Philips iSyntax and nested archives. Convert them to a pyramidal tiled TIFF with resolution first, e.g.
+with QuPath or `vips tiffsave in.tif out.tif --tile --pyramid --compression jpeg`.
 
 ### Ingestion
 
@@ -98,13 +106,14 @@ All endpoints are prefixed with `/api/v1`.
 | `POST /upload/start` | Create a slide (`uploading`) and start a multipart upload |
 | `POST /upload/presigned-urls`, `POST /upload/refresh-urls` | Presigned part URLs for a slide that is uploading |
 | `POST /upload/complete` | Finish the upload and start ingestion |
+| `POST /upload/import-from-storage` | Register an object already in the bucket (a key ending in `/` imports an extracted multi-file slide folder; keys under `slides/` or overlapping another slide are rejected) |
 | `GET /slides` | Slide library, newest first |
 | `GET /slides/{id}` | Slide metadata, OpenSlide properties, tissue box |
 | `GET /slides/{id}/image.dzi` | Deep Zoom descriptor (OpenSeadragon tile source) |
 | `GET /slides/{id}/image_files/{level}/{col}_{row}.jpeg` | Deep Zoom tile |
 | `GET /slides/{id}/thumbnail` | Thumbnail (JPEG) |
 | `GET /slides/{id}/region` | Export a level-0 region as PNG (longer side at most 2048 px) |
-| `GET /annotation-classes` | Tissue classes used to label annotations |
+| `GET /annotation-classes` | Tissue classes (tumour, stroma) used to label annotations; unannotated tissue is negative |
 | `GET, POST /slides/{id}/annotations` | List / create annotations (GeoJSON polygons, level-0 pixels) |
 | `PATCH, DELETE /slides/{id}/annotations/{annotation_id}` | Update / delete an annotation |
 | `GET /slides/{id}/annotations/export` | Download annotations as GeoJSON (QuPath-style properties) |
