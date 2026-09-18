@@ -1,4 +1,5 @@
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Annotated, cast
 
@@ -10,6 +11,11 @@ from app.core.config import Settings
 from app.services.slides import SlideHandleCache
 from app.services.storage import ObjectStorage, ObjectStorageService
 
+# One worker: ingestion is I/O- and CPU-heavy per slide, and running it off the request threadpool
+# is what matters here, not parallelizing across slides.
+INGEST_POOL_WORKERS = 1
+INGEST_POOL_THREAD_NAME_PREFIX = "ingest"
+
 
 @dataclass(frozen=True)
 class AppResources:
@@ -20,14 +26,17 @@ class AppResources:
     session_factory: sessionmaker[Session]
     storage: ObjectStorage
     slide_handles: SlideHandleCache
+    # Slide ingestion runs here, not on the request threadpool that also serves Deep Zoom tiles.
+    ingest_pool: ThreadPoolExecutor
 
     def close(self) -> None:
+        self.ingest_pool.shutdown(wait=False, cancel_futures=True)
         self.engine.dispose()
 
 
 def build_resources(settings: Settings) -> AppResources:
     storage = ObjectStorageService(settings)
-    storage.ensure_bucket()
+    storage.check_bucket()
     settings.SLIDE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
     engine = create_engine(str(settings.DATABASE_URL), pool_pre_ping=True)
     return AppResources(
@@ -37,6 +46,7 @@ def build_resources(settings: Settings) -> AppResources:
         session_factory=sessionmaker(bind=engine, expire_on_commit=False),
         storage=storage,
         slide_handles=SlideHandleCache(),
+        ingest_pool=ThreadPoolExecutor(max_workers=INGEST_POOL_WORKERS, thread_name_prefix=INGEST_POOL_THREAD_NAME_PREFIX),
     )
 
 

@@ -8,6 +8,8 @@ x-backend-environment: &backend-environment
 services:
   api:
     build: .
+    # --reload is what the source bind mount below is for; the image's own copy is used by the one-shot services.
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--no-access-log", "--reload"]
     ports:
       - "8000:8000"
     volumes:
@@ -16,20 +18,38 @@ services:
       - slide_cache:/var/lib/wsi-cache
     env_file: .env.local
     environment: *backend-environment
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
     depends_on:
       db:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
+      bootstrap:
+        condition: service_completed_successfully
 
   migrate:
     build: .
-    command: ["uv", "run", "alembic", "upgrade", "head"]
+    command: ["alembic", "upgrade", "head"]
     env_file: .env.local
     environment: *backend-environment
     depends_on:
       db:
         condition: service_healthy
+
+  # Creates the admin account on first start (ADMIN_PASSWORD); a no-op once it exists.
+  bootstrap:
+    build: .
+    command: ["python", "-m", "scripts.create_admin"]
+    env_file: .env.local
+    environment: *backend-environment
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
 
   db:
     image: postgres:17-alpine
@@ -45,46 +65,6 @@ services:
       timeout: 5s
       retries: 12
 
-  # --- Log aggregation stack: api/migrate log JSON to stdout, Promtail tails the containers'
-  # Docker logs and ships them to Loki, Grafana lets you search/filter them. ---
-
-  loki:
-    image: grafana/loki:3.1.0
-    ports:
-      - "3100:3100"
-    command: -config.file=/etc/loki/local-config.yaml
-    volumes:
-      - loki_data:/loki
-
-  promtail:
-    image: grafana/promtail:3.1.0
-    command: -config.file=/etc/promtail/config.yml
-    volumes:
-      - ./promtail-config.yml:/etc/promtail/config.yml:ro
-      # Promtail discovers and reads containers' logs straight from the Docker daemon.
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-    depends_on:
-      - loki
-
-  grafana:
-    image: grafana/grafana:11.2.0
-    ports:
-      # 3001 on the host: this machine already has a native Grafana on 3000.
-      - "3001:3000"
-    environment:
-      # No login stack needed for a local dev tool; lock this down before exposing it anywhere else.
-      - GF_AUTH_ANONYMOUS_ENABLED=true
-      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
-      - GF_AUTH_DISABLE_LOGIN_FORM=true
-    volumes:
-      - grafana_data:/var/lib/grafana
-      - ./grafana/provisioning:/etc/grafana/provisioning:ro
-      - ./grafana/dashboards:/etc/grafana/dashboards:ro
-    depends_on:
-      - loki
-
 volumes:
   postgres_data:
   slide_cache:
-  loki_data:
-  grafana_data:

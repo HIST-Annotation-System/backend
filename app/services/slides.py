@@ -18,6 +18,9 @@ from app.services.storage import ObjectStorage
 # never an overwrite - some buckets have a retention policy that silently no-ops overwrites/deletes
 # of existing objects (write succeeds, content doesn't change) rather than erroring.
 THUMBNAIL_OBJECT_KEY = "slides/{slide_id}/thumbnail_square.jpg"
+# Every object the application stores for a slide lives under its prefix, so deleting it cleans up everything.
+SLIDE_OBJECTS_ROOT = "slides/"
+SLIDE_OBJECTS_PREFIX = SLIDE_OBJECTS_ROOT + "{slide_id}/"
 DZI_FORMAT = "jpeg"
 DZI_TILE_SIZE = 254
 DZI_OVERLAP = 1
@@ -108,7 +111,14 @@ class SlideService:
         slide = require_slide(self._slides, slide_id)
         self._handles.evict(slide_id)
         self._files.purge(slide_id)
-        self._storage.delete_objects([slide.storage_key, THUMBNAIL_OBJECT_KEY.format(slide_id=slide_id)])
+        slide_prefix = SLIDE_OBJECTS_PREFIX.format(slide_id=slide_id)
+        self._storage.delete_prefix(slide_prefix)
+        # Imported slides keep their objects outside the prefix (imports never overlap another slide's).
+        if not slide.storage_key.startswith(slide_prefix):
+            if slide.storage_key.endswith("/"):
+                self._storage.delete_prefix(slide.storage_key)
+            else:
+                self._storage.delete_objects([slide.storage_key])
         self._slides.delete(slide)
 
     def get_thumbnail(self, slide_id: uuid.UUID) -> bytes:

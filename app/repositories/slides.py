@@ -17,6 +17,20 @@ class SlideRepository:
     def get_by_storage_key(self, storage_key: str) -> Slide | None:
         return self._session.scalars(select(Slide).where(Slide.storage_key == storage_key)).first()
 
+    def find_overlapping_storage_key(self, key: str) -> Slide | None:
+        """A slide whose storage key equals `key`, lies inside folder `key`, or is a folder containing `key`."""
+        exact = self.get_by_storage_key(key)
+        if exact is not None:
+            return exact
+        if key.endswith("/"):
+            inside = self._session.scalars(
+                select(Slide).where(Slide.storage_key.startswith(key, autoescape=True))
+            ).first()
+            if inside is not None:
+                return inside
+        folders = self._session.scalars(select(Slide).where(Slide.storage_key.endswith("/"))).all()
+        return next((slide for slide in folders if key.startswith(slide.storage_key)), None)
+
     def list_all(self) -> Sequence[Slide]:
         return self._session.scalars(select(Slide).order_by(Slide.created_at.desc())).all()
 

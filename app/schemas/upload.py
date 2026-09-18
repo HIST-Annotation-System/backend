@@ -3,13 +3,15 @@ from typing import Annotated
 
 from pydantic import BaseModel, Field
 
-BUCKET_MAX_PARTS = 10_000
+from app.core.constants import NAME_MAX_LENGTH, NAME_MIN_LENGTH, STORAGE_KEY_MAX_LENGTH
 
-PartNumber = Annotated[int, Field(gt=0, le=BUCKET_MAX_PARTS)]
+MULTIPART_UPLOAD_MAX_PARTS = 10_000
+
+PartNumber = Annotated[int, Field(gt=0, le=MULTIPART_UPLOAD_MAX_PARTS)]
 
 
 class StartUploadRequest(BaseModel):
-    filename: str = Field(min_length=1, max_length=255)
+    filename: str = Field(min_length=NAME_MIN_LENGTH, max_length=NAME_MAX_LENGTH)
 
 
 class StartUploadResponse(BaseModel):
@@ -49,7 +51,7 @@ class CompleteUploadRequest(BaseModel):
 
 
 class ImportFromStorageRequest(BaseModel):
-    key: str = Field(min_length=1, max_length=1024)
+    key: str = Field(min_length=NAME_MIN_LENGTH, max_length=STORAGE_KEY_MAX_LENGTH)
 
 
 class ImportFromStorageResponse(BaseModel):

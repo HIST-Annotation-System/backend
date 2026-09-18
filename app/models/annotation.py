@@ -7,13 +7,17 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, JsonType
 
+ANNOTATION_CLASS_NAME_MAX_LENGTH = 128
+# "#RRGGBB"
+HEX_COLOR_LENGTH = 7
+
 
 class AnnotationClass(Base):
     __tablename__ = "annotation_classes"
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
-    name: Mapped[str] = mapped_column(String(128))
-    color: Mapped[str] = mapped_column(String(7))
+    name: Mapped[str] = mapped_column(String(ANNOTATION_CLASS_NAME_MAX_LENGTH))
+    color: Mapped[str] = mapped_column(String(HEX_COLOR_LENGTH))
     sort_order: Mapped[int] = mapped_column(default=0)
 
 

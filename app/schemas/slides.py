@@ -3,6 +3,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.core.constants import NAME_MAX_LENGTH, NAME_MIN_LENGTH
 from app.models.slide import SlideStatus
 
 REGION_MAX_SIZE = 2048
@@ -44,7 +45,7 @@ class SlideDetail(SlideRead):
 
 
 class SlideRenameRequest(BaseModel):
-    name: str = Field(min_length=1, max_length=255)
+    name: str = Field(min_length=NAME_MIN_LENGTH, max_length=NAME_MAX_LENGTH)
 
 
 class RegionQuery(BaseModel):

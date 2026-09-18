@@ -1,7 +1,9 @@
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, HTTPException, Request, Response, status
 
+from app.core.constants import ACCESS_TOKEN_COOKIE, REFRESH_TOKEN_COOKIE
 from app.dependencies.auth import AccountServiceDep, AuthServiceDep, CurrentUserDep
-from app.schemas.auth import LoginRequest, RefreshTokenRequest, TokenResponse
+from app.dependencies.resources import SessionDep
+from app.schemas.auth import LoginRequest, TokenResponse
 from app.schemas.user import ProfileSetup
 
 router = APIRouter()
@@ -27,24 +29,22 @@ def login(request: LoginRequest, response: Response, auth_service: AuthServiceDe
 
 @router.post("/refresh", response_model=TokenResponse)
 def refresh_token(request: Request, response: Response, auth_service: AuthServiceDep) -> TokenResponse:
-    refresh_token = request.cookies.get("refresh_token")
-    if not refresh_token:
+    refresh_token_str = request.cookies.get(REFRESH_TOKEN_COOKIE)
+    if not refresh_token_str:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing refresh token")
-        
-    account = auth_service.verify_refresh_token(refresh_token)
+
+    account = auth_service.resolve_refresh_token(refresh_token_str)
     if not account:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired refresh token")
 
-    auth_service.revoke_refresh_token(refresh_token)
-    
+    auth_service.revoke_refresh_token(refresh_token_str)
+
     access_token = auth_service.create_access_token(account.id, account.role.value)
     new_refresh_token_obj = auth_service.create_refresh_token(account.id)
-    
+
     auth_service.set_token_cookies(response, access_token, new_refresh_token_obj.token)
     return TokenResponse(access_token=access_token, refresh_token=new_refresh_token_obj.token)
 
-
-from app.dependencies.resources import SessionDep
 
 @router.post("/setup-profile", response_model=TokenResponse)
 def setup_profile(
@@ -71,7 +71,7 @@ def setup_profile(
 
 @router.post("/logout")
 def logout(response: Response, current_user: CurrentUserDep) -> dict[str, str]:
-    response.delete_cookie("access_token")
-    response.delete_cookie("refresh_token")
-    # In a full implementation, we would also revoke the refresh token if passed.
+    response.delete_cookie(ACCESS_TOKEN_COOKIE)
+    response.delete_cookie(REFRESH_TOKEN_COOKIE)
+    #TODO: In a full implementation, we would also revoke the refresh token if passed.
     return {"status": "ok"}

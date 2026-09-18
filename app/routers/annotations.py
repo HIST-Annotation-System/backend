@@ -3,11 +3,10 @@ import uuid
 from fastapi import APIRouter, status
 from fastapi.responses import JSONResponse
 
+from app.core.constants import CONTENT_DISPOSITION_ATTACHMENT, MEDIA_TYPE_GEOJSON
 from app.dependencies.services import AnnotationServiceDep
-from app.routers.slides import CONTENT_DISPOSITION_ATTACHMENT
 from app.schemas.annotations import AnnotationClassRead, AnnotationCreate, AnnotationRead, AnnotationUpdate
 
-MEDIA_TYPE_GEOJSON = "application/geo+json"
 ANNOTATIONS_EXPORT_FILENAME = "annotations_{slide_id}.geojson"
 
 router = APIRouter()

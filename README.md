@@ -1,7 +1,8 @@
 # Backend API (FastAPI)
 
-Backend for the Whole Slide Image (WSI) viewer, built on **FastAPI**. It stores slides in object storage
-(MinIO/S3), keeps slide metadata and annotations in **PostgreSQL**, and serves Deep Zoom tiles with **OpenSlide**.
+Backend for the Whole Slide Image (WSI) viewer, built on **FastAPI**. It stores slides in S3-compatible object
+storage (e.g. Google Cloud Storage), keeps slide metadata and annotations in **PostgreSQL**, and serves Deep Zoom
+tiles with **OpenSlide**.
 Dependency and environment management is handled by **uv**.
 
 ## Directory Structure
@@ -35,7 +36,10 @@ performance cache that any worker may rebuild at any time.
 
 1. **Clone the repository** and navigate to the backend folder.
 2. **Create a local environment file:**
-   Copy `.env.example` to `.env.local` (the file read by `app/core/config.py`) and adjust the variables if necessary.
+   Copy `.env.example` to `.env.local` (the file read by `app/core/config.py`) and fill it in. Object storage is
+   **not** part of this compose file: point `BUCKET_ENDPOINT`, `BUCKET_NAME` and the credentials at a bucket that
+   already exists (GCS or any S3-compatible service). Without it the API still starts, but uploads and slide
+   viewing fail, and the log shows which bucket could not be reached.
 3. **Run the environment using Docker Compose:**
    ```bash
    docker compose up -d --build
@@ -43,9 +47,8 @@ performance cache that any worker may rebuild at any time.
    This starts:
    - `db` - PostgreSQL 17 (published on host port **5433** to avoid clashing with a local PostgreSQL),
    - `migrate` - a one-shot container running `alembic upgrade head`,
-   - `api` - the FastAPI server at `http://localhost:8000`,
-   - `minio` - object storage (API `http://localhost:9000`, Web UI `http://localhost:9001`),
-   - `loki` / `promtail` / `grafana` - log aggregation (see [Logs](#logs) below).
+   - `bootstrap` - a one-shot container creating the `ADMIN_USERNAME` account with `ADMIN_PASSWORD` (a no-op if it exists),
+   - `api` - the FastAPI server at `http://localhost:8000` (with `--reload` on the mounted source).
 
 4. **Stop the environment:**
    ```bash
@@ -55,9 +58,10 @@ performance cache that any worker may rebuild at any time.
 ### Running outside Docker
 
 ```bash
-docker compose up -d db minio      # infrastructure only
+docker compose up -d db                   # infrastructure only
 uv sync
 uv run alembic upgrade head
+uv run python -m scripts.create_admin     # once: creates the admin account
 uv run uvicorn app.main:app --reload --no-access-log
 ```
 
@@ -65,27 +69,37 @@ uv run uvicorn app.main:app --reload --no-access-log
 
 ### Supported formats
 
-Single-file formats (`.svs`, `.tif`, `.tiff`, `.ndpi`, `.scn`, `.bif`, `.svslide`) and plain images
-(`.jpg`, `.jpeg`, `.png`, `.bmp`) are uploaded as-is.
+Only formats the bundled OpenSlide reads natively are accepted (`app/services/slide_formats.py`), and every slide
+needs resolution metadata (MPP) and, above 10,000 px, a resolution pyramid. Anything else is rejected: by name
+when the upload starts, by content during ingestion (the slide ends `failed` with the reason).
 
-**MRXS (MIRAX) slides consist of a `.mrxs` file and a data folder with the same name.** Upload them as a single
-`.zip` archive containing both:
+| Kind | Formats | Upload as |
+|---|---|---|
+| Single file | Aperio `.svs`, pyramidal tiled `.tif`/`.tiff`, Hamamatsu `.ndpi`, Leica `.scn`, Ventana `.bif`, Sakura `.svslide`, Zeiss `.czi` | The file itself, never inside an archive |
+| Multi-file | MIRAX `.mrxs`, Hamamatsu `.vms`/`.vmu`, DICOM WSI `.dcm` | One `.zip` with exactly one slide and nothing else |
+
+Archive layouts (`__MACOSX/`, `.DS_Store` and `Thumbs.db` are ignored):
 
 ```
-CMU-1.zip
-├─ CMU-1.mrxs
-└─ CMU-1/
-   ├─ Slidedat.ini
-   ├─ Index.dat
-   └─ Data0000.dat ...
+CMU-1.zip                slide.zip                series.zip
+├─ CMU-1.mrxs            ├─ slide.vms             └─ series/
+└─ CMU-1/                ├─ slide.opt                ├─ level-0.dcm
+   ├─ Slidedat.ini       └─ slide_*.jpg              └─ level-1.dcm ...
+   └─ *.dat              (.vmu: index + .ngr files in one folder; DICOM files need the .dcm extension)
 ```
+
+Not supported: plain images (`.jpg`, `.png`, `.bmp`, ...), flat or OME-TIFF, stripped TIFF, Trestle, Olympus
+`.vsi`, Philips iSyntax and nested archives. Convert them to a pyramidal tiled TIFF with resolution first, e.g.
+with QuPath or `vips tiffsave in.tif out.tif --tile --pyramid --compression jpeg`.
 
 ### Ingestion
 
 After an upload completes, a background job copies the slide into the local slide cache (`SLIDE_CACHE_DIR`,
 extracting archives safely), validates it with OpenSlide, and stores its metadata, a thumbnail, and the bounding
 box of the detected tissue. The slide status goes `uploading` → `processing` → `ready` (or `failed` with an
-`error_message`).
+`error_message`). Ingestion runs on a dedicated worker thread, so a large slide never occupies the threadpool
+that serves Deep Zoom tiles; it lives in the API process, so a restart marks anything still `processing` as
+`failed` ("Ingestion was interrupted").
 
 Slides are added through the frontend's upload dialog (e.g. `examples/CMU-2.svs`).
 
@@ -98,13 +112,14 @@ All endpoints are prefixed with `/api/v1`.
 | `POST /upload/start` | Create a slide (`uploading`) and start a multipart upload |
 | `POST /upload/presigned-urls`, `POST /upload/refresh-urls` | Presigned part URLs for a slide that is uploading |
 | `POST /upload/complete` | Finish the upload and start ingestion |
+| `POST /upload/import-from-storage` | Register an object already in the bucket (a key ending in `/` imports an extracted multi-file slide folder; keys under `slides/` or overlapping another slide are rejected) |
 | `GET /slides` | Slide library, newest first |
 | `GET /slides/{id}` | Slide metadata, OpenSlide properties, tissue box |
 | `GET /slides/{id}/image.dzi` | Deep Zoom descriptor (OpenSeadragon tile source) |
 | `GET /slides/{id}/image_files/{level}/{col}_{row}.jpeg` | Deep Zoom tile |
 | `GET /slides/{id}/thumbnail` | Thumbnail (JPEG) |
 | `GET /slides/{id}/region` | Export a level-0 region as PNG (longer side at most 2048 px) |
-| `GET /annotation-classes` | Tissue classes used to label annotations |
+| `GET /annotation-classes` | Tissue classes (tumour, stroma) used to label annotations; unannotated tissue is negative |
 | `GET, POST /slides/{id}/annotations` | List / create annotations (GeoJSON polygons, level-0 pixels) |
 | `PATCH, DELETE /slides/{id}/annotations/{annotation_id}` | Update / delete an annotation |
 | `GET /slides/{id}/annotations/export` | Download annotations as GeoJSON (QuPath-style properties) |
@@ -115,13 +130,10 @@ Once the server is running, the interactive Swagger UI documentation is availabl
 Alternative documentation (ReDoc):
 - [http://localhost:8000/redoc](http://localhost:8000/redoc)
 
-## Tests and type checks
+## Type checks
 
 ```bash
-uv run pytest            # unit + API tests (SQLite, local fake storage, synthetic slides)
-uv run pytest -m slow    # integration test with examples/CMU-2.svs
 uv run mypy app          # strict type checking
-uv run mypy --explicit-package-bases tests
 ```
 
 ## Logs
@@ -132,19 +144,11 @@ with a `request_id` that's also echoed back as the `X-Request-ID` response heade
 for one request can be correlated. Set `LOG_LEVEL=DEBUG` in `.env.local` for more verbose output
 while diagnosing an issue.
 
-`docker compose up` also starts a small aggregation stack so you don't have to `docker compose logs`
-by hand:
+Read them with `docker compose logs -f api`, e.g. piped through `jq` to filter:
 
-- **Promtail** tails every container's Docker logs (via the Docker socket) and ships them to Loki.
-- **Loki** stores and indexes them (by `service` and `level`).
-- **Grafana** (`http://localhost:3001`, no login required) has Loki pre-configured as a datasource,
-  with a starter **"Application Logs"** dashboard (log volume by level, an errors/warnings feed, and
-  the full `api` log stream). Use **Explore** for ad-hoc [LogQL](https://grafana.com/docs/loki/latest/query/)
-  queries, e.g. `{service="api"} | json | status_code >= 500` or `{service="api"} |= "<request-id>"`
-  to pull every line for one request.
-
-This stack is meant for local/dev use (anonymous admin access, filesystem storage) - lock it down
-(auth, retention, real storage) before running it anywhere it'd be exposed.
+```bash
+docker compose logs -f --no-log-prefix api | jq 'select(.status_code >= 500)'
+```
 
 ## Database migrations
 

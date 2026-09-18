@@ -6,7 +6,7 @@ from pathlib import Path
 
 import numpy as np
 import openslide
-from PIL import Image, UnidentifiedImageError
+from PIL import Image
 from scipy import ndimage
 
 from app.exceptions.errors import InvalidInputError
@@ -21,30 +21,15 @@ DEFAULT_BACKGROUND_COLOR = "ffffff"
 TISSUE_DETECTION_SIZE = 2048
 TISSUE_WHITE_THRESHOLD = 220
 TISSUE_MIN_COMPONENT_RATIO = 0.05
-NOT_A_SLIDE = "'{filename}' is not a supported slide or image file."
-IMAGE_TOO_LARGE = "'{filename}' is too large for a plain image; convert it to a pyramidal format (e.g. SVS)."
+NOT_A_SLIDE = "'{filename}' is not a readable whole-slide image."
 
 
-def open_slide_file(path: Path) -> openslide.AbstractSlide:
-    """Open a whole-slide image with OpenSlide, or a plain image (JPEG, PNG, ...) as an ImageSlide.
-
-    Plain images are decoded eagerly: PIL otherwise reads pixel data lazily from the file on first
-    access, which corrupts reads when several threads share one handle (OpenSlide handles are safe).
-    """
+def open_slide_file(path: Path) -> openslide.OpenSlide:
+    """Open a whole-slide image with OpenSlide (only formats it reads natively are supported)."""
     try:
         return openslide.OpenSlide(path)
-    except openslide.OpenSlideUnsupportedFormatError:
-        pass
     except openslide.OpenSlideError as exc:
         raise InvalidInputError(NOT_A_SLIDE.format(filename=path.name)) from exc
-    try:
-        image = Image.open(path)
-        image.load()
-    except Image.DecompressionBombError as exc:
-        raise InvalidInputError(IMAGE_TOO_LARGE.format(filename=path.name)) from exc
-    except (UnidentifiedImageError, OSError) as exc:
-        raise InvalidInputError(NOT_A_SLIDE.format(filename=path.name)) from exc
-    return openslide.ImageSlide(image)
 
 
 def encode_jpeg(image: Image.Image) -> bytes:

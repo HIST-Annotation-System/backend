@@ -6,6 +6,7 @@ import fastapi
 from jose import JWTError, jwt
 
 from app.core.config import Settings
+from app.core.constants import ACCESS_TOKEN_COOKIE, REFRESH_TOKEN_COOKIE
 from app.models.account import Account, RefreshToken
 from app.repositories.accounts import AccountRepository, RefreshTokenRepository
 
@@ -34,7 +35,7 @@ class AuthService:
         token = RefreshToken(account_id=account_id, token=token_str, expires_at=expires_at)
         return self.refresh_token_repo.create(token)
 
-    def verify_refresh_token(self, token_str: str) -> Account | None:
+    def resolve_refresh_token(self, token_str: str) -> Account | None:
         token = self.refresh_token_repo.get_by_token(token_str)
         if not token:
             return None
@@ -51,7 +52,7 @@ class AuthService:
         token = self.refresh_token_repo.get_by_token(token_str)
         if token:
             token.is_revoked = True
-            self.refresh_token_repo.update()
+            self.refresh_token_repo.flush()
             return True
         return False
 
@@ -76,6 +77,8 @@ class AuthService:
             "samesite": "lax",  # TODO: switch to strict/lax for prod, or none+secure if APIs are on different domains
             "secure": False,    # TODO: set to True in prod when using HTTPS
         }
-        response.set_cookie(key="access_token", value=access_token, max_age=self.settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60, **cookie_kwargs)
+        access_max_age = int(timedelta(minutes=self.settings.ACCESS_TOKEN_EXPIRE_MINUTES).total_seconds())
+        response.set_cookie(key=ACCESS_TOKEN_COOKIE, value=access_token, max_age=access_max_age, **cookie_kwargs)
         if refresh_token:
-            response.set_cookie(key="refresh_token", value=refresh_token, max_age=self.settings.REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60, **cookie_kwargs)
+            refresh_max_age = int(timedelta(days=self.settings.REFRESH_TOKEN_EXPIRE_DAYS).total_seconds())
+            response.set_cookie(key=REFRESH_TOKEN_COOKIE, value=refresh_token, max_age=refresh_max_age, **cookie_kwargs)

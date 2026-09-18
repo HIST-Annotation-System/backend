@@ -24,6 +24,10 @@ class ConflictError(AppError):
     status_code = status.HTTP_409_CONFLICT
 
 
+class ForbiddenError(AppError):
+    status_code = status.HTTP_403_FORBIDDEN
+
+
 class InvalidInputError(AppError):
     status_code = status.HTTP_422_UNPROCESSABLE_CONTENT
 
