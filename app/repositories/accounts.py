@@ -1,5 +1,3 @@
-from datetime import datetime
-
 from sqlalchemy import select
 from sqlalchemy.orm import Session, joinedload
 
@@ -70,7 +68,3 @@ class RefreshTokenRepository:
 
     def update(self) -> None:
         self.session.flush()
-
-    def delete_expired(self, now: datetime) -> None:
-        # Delete tokens past their expiration
-        pass

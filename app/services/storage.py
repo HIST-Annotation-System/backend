@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Generator, Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
@@ -23,9 +23,6 @@ logger = logging.getLogger(__name__)
 
 PRESIGNED_URL_EXPIRATION_SECONDS = 3600
 STORAGE_UNAVAILABLE = "Object storage is unavailable."
-# Generous enough that a single request covers everything for a normal-sized bucket; the browser
-# still pages via next_token for buckets with more objects than this at one prefix level.
-BROWSE_PAGE_SIZE = 500
 
 
 @dataclass(frozen=True)
@@ -33,15 +30,6 @@ class StorageObject:
     key: str
     size: int
     last_modified: datetime
-
-
-@dataclass(frozen=True)
-class StoragePage:
-    """One page of a `list_objects` browse: subfolders (common prefixes) and objects."""
-
-    prefixes: list[str]
-    objects: list[StorageObject]
-    next_token: str | None
 
 
 class ObjectStorage(Protocol):
@@ -61,11 +49,7 @@ class ObjectStorage(Protocol):
 
     def get_bytes(self, key: str) -> bytes: ...
 
-    def list_objects(self, prefix: str, continuation_token: str | None) -> StoragePage: ...
-
     def iter_keys(self, prefix: str) -> Iterator[StorageObject]: ...
-
-    def get_presigned_get_url(self, key: str) -> str: ...
 
     def delete_objects(self, keys: Iterable[str]) -> None: ...
 
@@ -75,7 +59,7 @@ class ObjectStorage(Protocol):
 
 
 @contextmanager
-def _storage_errors() -> Iterator[None]:
+def _storage_errors() -> Generator[None]:
     """Log storage failures and turn them into StorageError (clients only get a generic message)."""
     try:
         yield
@@ -108,14 +92,16 @@ class ObjectStorageService:
         self._presign_client = _create_client(settings, settings.BUCKET_PUBLIC_ENDPOINT or settings.BUCKET_ENDPOINT)
         self._bucket = settings.BUCKET_NAME
 
-    def ensure_bucket(self) -> None:
-        with _storage_errors():
-            try:
-                self._client.head_bucket(Bucket=self._bucket)
-            except ClientError as exc:
-                if exc.response.get("Error", {}).get("Code") not in ("404", "NoSuchBucket"):
-                    raise
-                self._client.create_bucket(Bucket=self._bucket)
+    def check_bucket(self) -> None:
+        """Logs a clear error when the bucket is missing or unreachable.
+
+        The bucket is provisioned outside the application (and never created here), and a storage
+        outage must not stop the API from starting: failures surface per request instead.
+        """
+        try:
+            self._client.head_bucket(Bucket=self._bucket)
+        except (BotoCoreError, ClientError) as exc:
+            logger.error("Bucket %s is not reachable, uploads and slides will fail: %s", self._bucket, exc)
 
     def create_multipart_upload(self, key: str) -> str:
         with _storage_errors():
@@ -158,38 +144,6 @@ class ObjectStorageService:
     def get_bytes(self, key: str) -> bytes:
         with _storage_errors():
             return self._client.get_object(Bucket=self._bucket, Key=key)["Body"].read()
-
-    def list_objects(self, prefix: str, continuation_token: str | None) -> StoragePage:
-        with _storage_errors():
-            if continuation_token:
-                response = self._client.list_objects_v2(
-                    Bucket=self._bucket,
-                    Prefix=prefix,
-                    Delimiter="/",
-                    MaxKeys=BROWSE_PAGE_SIZE,
-                    ContinuationToken=continuation_token,
-                )
-            else:
-                response = self._client.list_objects_v2(
-                    Bucket=self._bucket, Prefix=prefix, Delimiter="/", MaxKeys=BROWSE_PAGE_SIZE
-                )
-            objects = [
-                StorageObject(key=item["Key"], size=item["Size"], last_modified=item["LastModified"])
-                for item in response.get("Contents", [])
-                # GCS returns the prefix itself as a zero-byte object when it was created as a "folder".
-                if item["Key"] != prefix
-            ]
-            prefixes = [item["Prefix"] for item in response.get("CommonPrefixes", [])]
-            next_token = response.get("NextContinuationToken") if response.get("IsTruncated") else None
-            return StoragePage(prefixes=prefixes, objects=objects, next_token=next_token)
-
-    def get_presigned_get_url(self, key: str) -> str:
-        with _storage_errors():
-            return self._presign_client.generate_presigned_url(
-                ClientMethod="get_object",
-                Params={"Bucket": self._bucket, "Key": key},
-                ExpiresIn=PRESIGNED_URL_EXPIRATION_SECONDS,
-            )
 
     def iter_keys(self, prefix: str) -> Iterator[StorageObject]:
         """Every object under `prefix`, at any depth (unlike the one-level `list_objects` browse)."""

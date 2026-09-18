@@ -27,8 +27,7 @@ class Settings(BaseSettings):
     BUCKET_SECRET_KEY: str
     BUCKET_NAME: str
     BUCKET_REGION: str
-    # "localhost" + the published host port outside Docker; docker-compose overrides these to
-    # "db" + the container-internal port, so the same .env.local works in both setups.
+    
     POSTGRES_SERVER: str = "localhost"
     POSTGRES_PORT: int = 5432
     POSTGRES_USER: str
@@ -37,11 +36,12 @@ class Settings(BaseSettings):
     # Local, re-creatable copies of slides (OpenSlide needs filesystem paths).
     SLIDE_CACHE_DIR: Path = Path(".slide-cache")
 
-    # Authentication
     JWT_SECRET: str
     JWT_ALGORITHM: str
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
+    # The administrator account created by scripts/create_admin.py on first start.
+    ADMIN_USERNAME: str
     ADMIN_PASSWORD: str
 
     model_config = SettingsConfigDict(env_file=".env.local", env_file_encoding="utf-8", extra="ignore")

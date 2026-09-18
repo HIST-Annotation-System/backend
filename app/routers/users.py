@@ -52,30 +52,6 @@ def update_account(
     return account
 
 
-@router.put("/me", response_model=AccountResponse)
-def update_my_profile(
-    request: ProfileUpdate, 
-    current_user: CurrentUserDep, 
-    account_service: AccountServiceDep,
-    session: SessionDep
-) -> AccountResponse:
-    is_admin = current_user.role == Role.ADMIN
-    account = account_service.update_profile(current_user.id, current_user.id, is_admin, request)
-    session.commit()
-    return account
-
-
-@router.delete("/me")
-def delete_my_account(
-    current_user: CurrentUserDep, 
-    account_service: AccountServiceDep,
-    session: SessionDep
-) -> dict[str, str]:
-    account_service.delete_account(current_user.id, current_user.id, is_admin=current_user.role == Role.ADMIN)
-    session.commit()
-    return {"status": "ok"}
-
-
 @router.delete("/{account_id}")
 def delete_account(
     account_id: int, 

@@ -37,13 +37,7 @@ def get_current_user(
     token: Annotated[str | None, Depends(oauth2_scheme)],
     auth_service: AuthServiceDep,
 ) -> Account:
-    # Try getting token from authorization header first, then fallback to cookie
     actual_token = token or request.cookies.get("access_token")
-    if not actual_token:
-        # Check if the token is passed as "Bearer <token>" in a cookie sometimes happens
-        if request.cookies.get("access_token", "").startswith("Bearer "):
-            actual_token = request.cookies.get("access_token", "")[7:]
-    
     if not actual_token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 
 from app.dependencies.auth import AccountServiceDep, AuthServiceDep, CurrentUserDep
-from app.schemas.auth import LoginRequest, RefreshTokenRequest, TokenResponse
+from app.schemas.auth import LoginRequest, TokenResponse
 from app.schemas.user import ProfileSetup
 
 router = APIRouter()

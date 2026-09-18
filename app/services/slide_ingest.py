@@ -6,6 +6,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 import openslide
+from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.exceptions.errors import AppError, InvalidInputError
@@ -26,9 +27,23 @@ from app.services.storage import ObjectStorage
 logger = logging.getLogger(__name__)
 
 PROCESSING_FAILED = "Unexpected error while processing the slide."
+INGEST_INTERRUPTED = "Ingestion was interrupted; upload the slide again."
+# Progress is committed at most every few percent: it is only a progress bar.
+INGEST_PROGRESS_STEP = 5
 VENDOR_MISMATCH = "'{filename}' contains {vendor} data, which doesn't match its extension."
 MISSING_MPP = "The slide has no resolution (MPP) metadata."
 NOT_PYRAMIDAL = "The slide is not pyramidal (e.g. a flat or OME-TIFF). Convert it to a pyramidal tiled TIFF or SVS."
+
+
+def fail_interrupted_ingests(session_factory: sessionmaker[Session]) -> None:
+    """Fails slides left in `processing` by a previous process; ingestion is in-process, so they can't resume."""
+    with session_factory() as session:
+        interrupted = session.scalars(select(Slide).where(Slide.status == SlideStatus.PROCESSING)).all()
+        for slide in interrupted:
+            slide.status, slide.error_message, slide.ingest_progress = SlideStatus.FAILED, INGEST_INTERRUPTED, None
+        session.commit()
+    if interrupted:
+        logger.warning("Marked %d interrupted slide(s) as failed", len(interrupted))
 
 
 def _to_float(value: str | None) -> float | None:
@@ -126,7 +141,7 @@ class SlideIngestService:
         Capped at 99 so the bar never reads "100%" while thumbnail/tissue analysis is still running.
         """
         total = slide.file_size_bytes or 0
-        state = {"downloaded": 0, "last_reported": -1}
+        state = {"downloaded": 0, "last_reported": -INGEST_PROGRESS_STEP}
         lock = threading.Lock()
 
         def on_progress(chunk_bytes: int) -> None:
@@ -135,7 +150,7 @@ class SlideIngestService:
             with lock:
                 state["downloaded"] += chunk_bytes
                 percent = min(99, int(state["downloaded"] * 100 / total))
-                if percent != state["last_reported"]:
+                if percent >= state["last_reported"] + INGEST_PROGRESS_STEP:
                     state["last_reported"] = percent
                     slide.ingest_progress = percent
                     slides.save(slide)

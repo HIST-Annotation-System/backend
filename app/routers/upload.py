@@ -1,7 +1,8 @@
 import uuid
 
-from fastapi import APIRouter, BackgroundTasks, status
+from fastapi import APIRouter, status
 
+from app.dependencies.resources import ResourcesDep
 from app.dependencies.services import SlideIngestServiceDep, SlideUploadServiceDep
 from app.schemas.upload import (
     CompleteUploadRequest,
@@ -36,12 +37,12 @@ def refresh_urls(req: RefreshUrlsRequest, service: SlideUploadServiceDep) -> Ref
 @router.post("/complete", status_code=status.HTTP_204_NO_CONTENT)
 def complete_upload(
     req: CompleteUploadRequest,
-    background_tasks: BackgroundTasks,
     service: SlideUploadServiceDep,
     ingest: SlideIngestServiceDep,
+    resources: ResourcesDep,
 ) -> None:
     service.complete_upload(req.slide_id, req.upload_id, {part.PartNumber: part.ETag for part in req.parts})
-    background_tasks.add_task(ingest.ingest, req.slide_id)
+    resources.ingest_pool.submit(ingest.ingest, req.slide_id)
 
 
 @router.post("/{slide_id}/cancel", status_code=status.HTTP_204_NO_CONTENT)
@@ -52,10 +53,10 @@ def cancel_upload(slide_id: uuid.UUID, service: SlideUploadServiceDep) -> None:
 @router.post("/import-from-storage", response_model=ImportFromStorageResponse)
 def import_from_storage(
     req: ImportFromStorageRequest,
-    background_tasks: BackgroundTasks,
     service: SlideUploadServiceDep,
     ingest: SlideIngestServiceDep,
+    resources: ResourcesDep,
 ) -> ImportFromStorageResponse:
     slide_id = service.import_from_storage(req.key)
-    background_tasks.add_task(ingest.ingest, slide_id)
+    resources.ingest_pool.submit(ingest.ingest, slide_id)
     return ImportFromStorageResponse(slide_id=slide_id)
