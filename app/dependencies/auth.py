@@ -4,7 +4,8 @@ from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 
-from app.core.config import Settings
+from app.core.config import Settings, settings
+from app.core.constants import ACCESS_TOKEN_COOKIE
 from app.dependencies.resources import ResourcesDep, SessionDep
 from app.models.account import Account, Role
 from app.repositories.accounts import AccountRepository, RefreshTokenRepository
@@ -12,7 +13,7 @@ from app.repositories.profiles import ProfileRepository
 from app.services.accounts import AccountService
 from app.services.auth import AuthService
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login", auto_error=False)
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl=f"{settings.API_V1_STR}/auth/login", auto_error=False)
 
 def get_auth_service(session: SessionDep, resources: ResourcesDep) -> AuthService:
     return AuthService(
@@ -37,15 +38,15 @@ def get_current_user(
     token: Annotated[str | None, Depends(oauth2_scheme)],
     auth_service: AuthServiceDep,
 ) -> Account:
-    actual_token = token or request.cookies.get("access_token")
-    if not actual_token:
+    bearer_or_cookie_token = token or request.cookies.get(ACCESS_TOKEN_COOKIE)
+    if not bearer_or_cookie_token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Not authenticated",
             headers={"WWW-Authenticate": "Bearer"},
         )
-        
-    user = auth_service.get_current_user_from_token(actual_token)
+
+    user = auth_service.get_current_user_from_token(bearer_or_cookie_token)
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -60,10 +61,10 @@ CurrentUserDep = Annotated[Account, Depends(get_current_user)]
 
 class RequireRole:
     def __init__(self, role: Role):
-        self.role = role
+        self._role = role
 
     def __call__(self, current_user: CurrentUserDep) -> Account:
-        if current_user.role != self.role:
+        if current_user.role != self._role:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Not enough privileges"

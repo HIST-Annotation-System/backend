@@ -3,14 +3,11 @@ from typing import Annotated
 
 from fastapi import APIRouter, Query, Response, status
 
+from app.core.constants import CONTENT_DISPOSITION_ATTACHMENT, MEDIA_TYPE_XML
 from app.dependencies.services import SlideServiceDep
 from app.schemas.slides import RegionQuery, SlideDetail, SlideRead, SlideRenameRequest
 from app.services.slide_analysis import MEDIA_TYPE_JPEG, MEDIA_TYPE_PNG
 
-MEDIA_TYPE_XML = "application/xml"
-# Slide content never changes for a given id, so tiles and derived images can be cached forever.
-IMMUTABLE = {"Cache-Control": "public, max-age=31536000, immutable"}
-CONTENT_DISPOSITION_ATTACHMENT = 'attachment; filename="{filename}"'
 REGION_FILENAME = "region_{x}_{y}_{width}x{height}.png"
 
 router = APIRouter()
@@ -38,18 +35,22 @@ def delete_slide(slide_id: uuid.UUID, service: SlideServiceDep) -> None:
 
 @router.get("/{slide_id}/image.dzi")
 def get_dzi(slide_id: uuid.UUID, service: SlideServiceDep) -> Response:
-    return Response(service.get_dzi(slide_id), media_type=MEDIA_TYPE_XML, headers=IMMUTABLE)
+    # Slide content never changes for a given id, so this can be cached forever.
+    headers = {"Cache-Control": "public, max-age=31536000, immutable"}
+    return Response(service.get_dzi(slide_id), media_type=MEDIA_TYPE_XML, headers=headers)
 
 
 # Standard Deep Zoom layout: OpenSeadragon derives "<name>_files/" from the "<name>.dzi" URL.
 @router.get("/{slide_id}/image_files/{level}/{col}_{row}.jpeg")
 def get_tile(slide_id: uuid.UUID, level: int, col: int, row: int, service: SlideServiceDep) -> Response:
-    return Response(service.get_tile(slide_id, level, col, row), media_type=MEDIA_TYPE_JPEG, headers=IMMUTABLE)
+    headers = {"Cache-Control": "public, max-age=31536000, immutable"}
+    return Response(service.get_tile(slide_id, level, col, row), media_type=MEDIA_TYPE_JPEG, headers=headers)
 
 
 @router.get("/{slide_id}/thumbnail")
 def get_thumbnail(slide_id: uuid.UUID, service: SlideServiceDep) -> Response:
-    return Response(service.get_thumbnail(slide_id), media_type=MEDIA_TYPE_JPEG, headers=IMMUTABLE)
+    headers = {"Cache-Control": "public, max-age=31536000, immutable"}
+    return Response(service.get_thumbnail(slide_id), media_type=MEDIA_TYPE_JPEG, headers=headers)
 
 
 @router.get("/{slide_id}/region")

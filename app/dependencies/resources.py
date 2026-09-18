@@ -11,6 +11,11 @@ from app.core.config import Settings
 from app.services.slides import SlideHandleCache
 from app.services.storage import ObjectStorage, ObjectStorageService
 
+# One worker: ingestion is I/O- and CPU-heavy per slide, and running it off the request threadpool
+# is what matters here, not parallelizing across slides.
+INGEST_POOL_WORKERS = 1
+INGEST_POOL_THREAD_NAME_PREFIX = "ingest"
+
 
 @dataclass(frozen=True)
 class AppResources:
@@ -41,7 +46,7 @@ def build_resources(settings: Settings) -> AppResources:
         session_factory=sessionmaker(bind=engine, expire_on_commit=False),
         storage=storage,
         slide_handles=SlideHandleCache(),
-        ingest_pool=ThreadPoolExecutor(max_workers=1, thread_name_prefix="ingest"),
+        ingest_pool=ThreadPoolExecutor(max_workers=INGEST_POOL_WORKERS, thread_name_prefix=INGEST_POOL_THREAD_NAME_PREFIX),
     )
 
 

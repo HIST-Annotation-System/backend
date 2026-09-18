@@ -19,7 +19,6 @@ from app.services.slide_formats import (
 )
 from app.services.storage import ObjectStorage, StorageObject
 
-FOLDER_SEPARATOR = "/"
 ZIP_MAX_UNCOMPRESSED_BYTES = 50 * 1024**3
 INVALID_ARCHIVE = "The uploaded file is not a valid ZIP archive."
 ARCHIVE_TOO_LARGE = "The archive is too large once extracted."
@@ -52,7 +51,7 @@ class SlideFileService:
         temp_dir.mkdir(parents=True)
         try:
             filename = PurePosixPath(storage_key).name
-            if storage_key.endswith(FOLDER_SEPARATOR):
+            if storage_key.endswith("/"):
                 self._download_folder(storage_key, temp_dir, on_progress)
             elif filename.lower().endswith(ARCHIVE_SUFFIX):
                 self._storage.download_file(storage_key, archive, on_progress)
@@ -92,7 +91,7 @@ def list_folder_members(storage: ObjectStorage, prefix: str) -> dict[PurePosixPa
     return {
         path: obj
         for path, obj in members.items()
-        if not obj.key.endswith(FOLDER_SEPARATOR) and not is_ignored_member(path)
+        if not obj.key.endswith("/") and not is_ignored_member(path)
     }
 
 

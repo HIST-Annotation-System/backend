@@ -7,7 +7,7 @@ from app.exceptions.errors import ConflictError, InvalidInputError
 from app.models.slide import Slide, SlideStatus
 from app.repositories.slides import SlideRepository
 from app.schemas.upload import PresignedUrlsResponse, RefreshUrlsResponse, StartUploadResponse
-from app.services.slide_files import FOLDER_SEPARATOR, list_folder_members
+from app.services.slide_files import list_folder_members
 from app.services.slide_formats import validate_slide_members, validate_upload_name
 from app.services.slides import SLIDE_OBJECTS_PREFIX, SLIDE_OBJECTS_ROOT, require_slide
 from app.services.storage import ObjectStorage
@@ -82,7 +82,7 @@ class SlideUploadService:
             raise ConflictError(message.format(key=key, name=existing.name))
 
         original = PurePosixPath(key).name
-        if key.endswith(FOLDER_SEPARATOR):
+        if key.endswith("/"):
             members = list_folder_members(self._storage, key)
             validate_slide_members(list(members))
             name, file_size = original, sum(member.size for member in members.values())
