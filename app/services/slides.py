@@ -6,11 +6,18 @@ from dataclasses import dataclass
 import openslide
 from openslide.deepzoom import DeepZoomGenerator
 
-from app.exceptions.errors import ConflictError, InvalidInputError, NotFoundError
+from app.exceptions.errors import ConflictError, InvalidInputError, NotFoundError, StorageError
 from app.models.slide import Slide, SlideStatus
 from app.repositories.slides import SlideRepository
 from app.schemas.slides import REGION_MAX_SIZE, RegionQuery, SlideDetail, SlideRead
-from app.services.slide_analysis import encode_jpeg, encode_png, open_slide_file, read_region_image
+from app.services.slide_analysis import (
+    MEDIA_TYPE_JPEG,
+    encode_jpeg,
+    encode_png,
+    open_slide_file,
+    read_region_image,
+    render_thumbnail,
+)
 from app.services.slide_files import SlideFileService
 from app.services.storage import ObjectStorage
 
@@ -122,8 +129,18 @@ class SlideService:
         self._slides.delete(slide)
 
     def get_thumbnail(self, slide_id: uuid.UUID) -> bytes:
-        require_slide(self._slides, slide_id, ready=True)
-        return self._storage.get_bytes(THUMBNAIL_OBJECT_KEY.format(slide_id=slide_id))
+        slide = require_slide(self._slides, slide_id, ready=True)
+        key = THUMBNAIL_OBJECT_KEY.format(slide_id=slide_id)
+        try:
+            return self._storage.get_bytes(key)
+        except StorageError:
+            # The stored thumbnail can go missing independently of the slide (bucket reset, object
+            # expiry, a failed re-upload) even though the slide itself is still ready. Rebuild it from
+            # the local slide file - already required to be present for tiles - instead of leaving the
+            # slide permanently thumbnail-less.
+            thumbnail = render_thumbnail(self._open(slide_id).slide, slide.tissue_bbox)
+            self._storage.put_bytes(key, thumbnail, MEDIA_TYPE_JPEG)
+            return thumbnail
 
     def get_dzi(self, slide_id: uuid.UUID) -> str:
         return self._open(slide_id).deepzoom.get_dzi(DZI_FORMAT)

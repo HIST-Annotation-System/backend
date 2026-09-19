@@ -58,16 +58,22 @@ def render_thumbnail(slide: openslide.AbstractSlide, tissue_bbox: dict[str, int]
 def _square_crop(
     x: int, y: int, width: int, height: int, slide_width: int, slide_height: int
 ) -> tuple[int, int, int]:
-    """A square (x, y, side) centered on the given box, clamped to start within the slide.
+    """A square (x, y, side) centered on the given box.
 
-    `side` may still put the far edge past the slide's bounds for a very elongated box; reading past
-    the edge is safe (read_region_image paints it in the background colour), so this isn't clamped.
+    Clamped to start within the slide only when the square actually fits inside it in that
+    dimension. For a box elongated enough that `side` exceeds the slide's width or height (e.g. a
+    thin, wide tissue strip), clamping the start to 0 would push the content into one corner instead
+    of centering it - so centering wins and the far edge is left to overflow the slide's bounds
+    (read_region_image paints that overflow in the background colour, so it just pads evenly).
     """
     side = max(width, height, 1)
     cx, cy = x + width / 2, y + height / 2
-    x0 = round(max(0.0, min(cx - side / 2, slide_width - side)))
-    y0 = round(max(0.0, min(cy - side / 2, slide_height - side)))
-    return x0, y0, side
+    x0, y0 = cx - side / 2, cy - side / 2
+    if side <= slide_width:
+        x0 = max(0.0, min(x0, slide_width - side))
+    if side <= slide_height:
+        y0 = max(0.0, min(y0, slide_height - side))
+    return round(x0), round(y0), side
 
 
 def detect_tissue_bbox(slide: openslide.AbstractSlide) -> dict[str, int] | None:
