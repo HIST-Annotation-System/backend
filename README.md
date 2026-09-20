@@ -1,7 +1,7 @@
 # Backend API (FastAPI)
 
-Backend for the Whole Slide Image (WSI) viewer, built on **FastAPI**. It stores slides in S3-compatible object
-storage (e.g. Google Cloud Storage), keeps slide metadata and annotations in **PostgreSQL**, and serves Deep Zoom
+Backend for the Whole Slide Image (WSI) viewer, built on **FastAPI**. It stores slides in **AWS S3**, keeps
+slide metadata and annotations in **PostgreSQL** (RDS), and serves Deep Zoom
 tiles with **OpenSlide**.
 Dependency and environment management is handled by **uv**.
 
@@ -18,7 +18,7 @@ The main application code is located in the `app/` folder:
 - `schemas/` - Pydantic models (DTOs) used for input and output data validation.
 - `services/` - Business logic: uploads, ingestion, Deep Zoom tiling, annotations, object storage.
 
-Database migrations live in `alembic/`.
+Database migrations live in `alembic/`, and the Terraform config for the AWS resources in `infra/`.
 
 ### Statelessness
 
@@ -35,35 +35,55 @@ performance cache that any worker may rebuild at any time.
 ## Installation and Local Setup
 
 1. **Clone the repository** and navigate to the backend folder.
-2. **Create a local environment file:**
-   Copy `.env.example` to `.env.local` (the file read by `app/core/config.py`) and fill it in. Object storage is
-   **not** part of this compose file: point `BUCKET_ENDPOINT`, `BUCKET_NAME` and the credentials at a bucket that
-   already exists (GCS or any S3-compatible service). Without it the API still starts, but uploads and slide
-   viewing fail, and the log shows which bucket could not be reached.
-3. **Run the environment using Docker Compose:**
+2. **Provision the AWS resources**, the RDS database and the S3 bucket, by following
+   [`infra/README.md`](infra/README.md). Compose runs the FastAPI service and nothing else - there is no
+   database container, so the stack has to exist first.
+3. **Create a local environment file:**
+   Copy `.env.example` to `.env.local` (the file read by `app/core/config.py`) and fill in the `BUCKET_*` and
+   `POSTGRES_*` values from `terraform output -raw env_local`. Without a reachable bucket the API still starts
+   but uploads and slide viewing fail, and the log shows which bucket could not be reached; without a reachable
+   database it does not start at all.
+4. **Run the environment using Docker Compose:**
    ```bash
    docker compose up -d --build
    ```
    This starts:
-   - `db` - PostgreSQL 17 (published on host port **5433** to avoid clashing with a local PostgreSQL),
-   - `migrate` - a one-shot container running `alembic upgrade head`,
-   - `bootstrap` - a one-shot container creating the `ADMIN_USERNAME` account with `ADMIN_PASSWORD` (a no-op if it exists),
+   - `migrate` - a one-shot container running `alembic upgrade head` against RDS,
    - `api` - the FastAPI server at `http://localhost:8000` (with `--reload` on the mounted source).
 
-4. **Stop the environment:**
+   The `ADMIN_USERNAME` account already exists in RDS. On a fresh database, create it once with
+   `docker compose run --rm api python -m scripts.create_admin`.
+
+   The containers reach RDS through Docker's NAT, so their source address is the host's public IP and the
+   security group's `/32` rule covers them - no extra CIDR needed.
+
+5. **Stop the environment:**
    ```bash
    docker compose down
    ```
 
 ### Running outside Docker
 
+Same `.env.local`, no containers:
+
 ```bash
-docker compose up -d db                   # infrastructure only
 uv sync
 uv run alembic upgrade head
 uv run python -m scripts.create_admin     # once: creates the admin account
 uv run uvicorn app.main:app --reload --no-access-log
 ```
+
+## Infrastructure (AWS)
+
+`infra/` holds the Terraform config for the cloud resources the backend runs on: an RDS PostgreSQL 17 instance,
+the S3 bucket for slides, and an IAM user whose access keys the app uses. It is not optional any more - compose
+has no database service, so the stack has to be applied before the backend can start.
+
+One thing to know before starting: the region is pinned to `eu-north-1` by an organization SCP that denies every
+other one, so `aws_region` cannot be moved closer to home.
+
+**[`infra/README.md`](infra/README.md) is the deployment guide**: prerequisites, variables, apply, wiring up
+`.env.local`, verification, teardown and troubleshooting.
 
 ## Slides
 
@@ -169,10 +189,9 @@ The main variables are listed in `.env.example`:
 
 | Variable | Purpose |
 |---|---|
-| `POSTGRES_SERVER`, `POSTGRES_PORT`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` | PostgreSQL connection; `DATABASE_URL` is built from these (see `app/core/config.py`). Default server/port (`localhost`/`5433`) target the host-published port; docker-compose overrides them to `db`/`5432` for the api/migrate containers |
-| `POSTGRES_HOST_PORT` | Host port Postgres is published on (compose only, defaults to `5433`) |
-| `BUCKET_ENDPOINT` / `BUCKET_PUBLIC_ENDPOINT` | Object storage endpoint used by the backend / by browsers for presigned URLs |
-| `BUCKET_ACCESS_KEY`, `BUCKET_SECRET_KEY`, `BUCKET_NAME` | Object storage credentials and bucket |
+| `POSTGRES_SERVER`, `POSTGRES_PORT`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` | PostgreSQL connection; `DATABASE_URL` is built from these (see `app/core/config.py`). They point at RDS and come from `terraform output -raw env_local`; compose passes them through unchanged |
+| `BUCKET_ENDPOINT` | S3 regional endpoint; the browser uses the same one, because presigned URLs are signed for it |
+| `BUCKET_ACCESS_KEY`, `BUCKET_SECRET_KEY`, `BUCKET_NAME`, `BUCKET_REGION` | Object storage credentials, bucket and region |
 | `SLIDE_CACHE_DIR` | Directory holding local copies of slides |
 
 `docker-compose.yml` loads every service's config straight from `.env.local` via `env_file:`, so

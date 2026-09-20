@@ -1,0 +1,10 @@
+# Terraform state and provider cache - never commit these.
+# (.terraform.lock.hcl is deliberately NOT ignored: the provider lock belongs in version control.)
+.terraform/
+*.tfstate
+*.tfstate.backup
+crash.log
+crash.*.log
+
+# Real values - keep out of version control. terraform.tfvars.example does not match this pattern.
+*.tfvars

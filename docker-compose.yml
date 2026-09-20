@@ -1,15 +1,13 @@
-# Every service below loads its config from .env.local via env_file (not ${VAR} interpolation),
-# so `docker compose up` works with no --env-file flag and no risk of silently blank credentials.
-x-backend-environment: &backend-environment
-  POSTGRES_SERVER: db
-  POSTGRES_PORT: 5432
-  SLIDE_CACHE_DIR: /var/lib/wsi-cache
-
+# Every service loads its config from .env.local via env_file (not ${VAR} interpolation), so
+# `docker compose up` needs no --env-file flag and cannot silently see blank credentials.
+# Nothing stateful runs here: the database is RDS and slides live in S3 (see infra/). Containers
+# reach RDS through Docker's NAT, so the source address is the host's public IP and the security
+# group's /32 rule keeps working.
 services:
   api:
     build: .
-    # --reload is what the source bind mount below is for; the image's own copy is used by the one-shot services.
-    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--no-access-log", "--reload"]
+    # --reload is what the source bind mount below is for; the image's own copy is used by the migrate service.
+    command: [ "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--no-access-log", "--reload" ]
     ports:
       - "8000:8000"
     volumes:
@@ -17,54 +15,22 @@ services:
       # Kept outside the /app bind mount so cached slides never land in the repository.
       - slide_cache:/var/lib/wsi-cache
     env_file: .env.local
-    environment: *backend-environment
+    environment:
+      SLIDE_CACHE_DIR: /var/lib/wsi-cache
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      test: [ "CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')" ]
       interval: 30s
       timeout: 5s
       retries: 5
       start_period: 10s
     depends_on:
-      db:
-        condition: service_healthy
       migrate:
-        condition: service_completed_successfully
-      bootstrap:
         condition: service_completed_successfully
 
   migrate:
     build: .
-    command: ["alembic", "upgrade", "head"]
+    command: [ "alembic", "upgrade", "head" ]
     env_file: .env.local
-    environment: *backend-environment
-    depends_on:
-      db:
-        condition: service_healthy
-
-  # Creates the admin account on first start (ADMIN_PASSWORD); a no-op once it exists.
-  bootstrap:
-    build: .
-    command: ["python", "-m", "scripts.create_admin"]
-    env_file: .env.local
-    environment: *backend-environment
-    depends_on:
-      migrate:
-        condition: service_completed_successfully
-
-  db:
-    image: postgres:17-alpine
-    ports:
-      # 5433 on the host avoids clashing with a natively installed PostgreSQL.
-      - "${POSTGRES_HOST_PORT:-5433}:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    env_file: .env.local
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
-      interval: 5s
-      timeout: 5s
-      retries: 12
 
 volumes:
-  postgres_data:
   slide_cache:
