@@ -33,7 +33,7 @@ class StorageObject:
 
 
 class ObjectStorage(Protocol):
-    """Object storage used by the services (MinIO/S3 in the app, a local fake in tests)."""
+    """Object storage used by the services (S3 in the app, a local fake in tests)."""
 
     def create_multipart_upload(self, key: str) -> str: ...
 
@@ -68,28 +68,22 @@ def _storage_errors() -> Generator[None]:
         raise StorageError(STORAGE_UNAVAILABLE) from exc
 
 
-def _create_client(settings: Settings, endpoint_url: str) -> S3Client:
+def _create_client(settings: Settings) -> S3Client:
     return boto3.client(
         "s3",
-        endpoint_url=endpoint_url,
+        endpoint_url=settings.BUCKET_ENDPOINT,
         aws_access_key_id=settings.BUCKET_ACCESS_KEY,
         aws_secret_access_key=settings.BUCKET_SECRET_KEY,
         region_name=settings.BUCKET_REGION,
-        config=Config(
-            signature_version="s3v4",
-            # GCS's S3 API rejects the aws-chunked uploads with CRC32 trailers that boto3 sends by default.
-            request_checksum_calculation="when_required",
-            response_checksum_validation="when_required",
-        ),
+        config=Config(signature_version="s3v4"),
     )
 
 
 class ObjectStorageService:
-    """MinIO/S3 storage. Presigned URLs are signed for the endpoint browsers reach (signing is offline)."""
+    """S3 storage. Presigning is offline, so the browser uploads parts straight to the bucket."""
 
     def __init__(self, settings: Settings) -> None:
-        self._client = _create_client(settings, settings.BUCKET_ENDPOINT)
-        self._presign_client = _create_client(settings, settings.BUCKET_PUBLIC_ENDPOINT or settings.BUCKET_ENDPOINT)
+        self._client = _create_client(settings)
         self._bucket = settings.BUCKET_NAME
 
     def check_bucket(self) -> None:
@@ -110,7 +104,7 @@ class ObjectStorageService:
     def get_presigned_part_urls(self, key: str, upload_id: str, part_numbers: Iterable[int]) -> dict[int, str]:
         with _storage_errors():
             return {
-                part: self._presign_client.generate_presigned_url(
+                part: self._client.generate_presigned_url(
                     ClientMethod="upload_part",
                     Params={"Bucket": self._bucket, "Key": key, "UploadId": upload_id, "PartNumber": part},
                     ExpiresIn=PRESIGNED_URL_EXPIRATION_SECONDS,
@@ -150,7 +144,7 @@ class ObjectStorageService:
         with _storage_errors():
             for page in self._client.get_paginator("list_objects_v2").paginate(Bucket=self._bucket, Prefix=prefix):
                 for item in page.get("Contents", []):
-                    # GCS returns the prefix itself as a zero-byte object when it was created as a "folder".
+                    # A folder created in the S3 console is a zero-byte object named after the prefix itself.
                     if item["Key"] != prefix:
                         yield StorageObject(key=item["Key"], size=item["Size"], last_modified=item["LastModified"])
 

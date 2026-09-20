@@ -1,0 +1,7 @@
+aws_region  = "eu-north-1"
+db_name     = "wsi"
+db_username = "wsi"
+db_password = "CHANGE_ME_use_a_strong_password"
+bucket_name = "my-unique-bucket-name"
+# The database is publicly reachable, so list one /32 per developer (curl ifconfig.me), not 0.0.0.0/0.
+allowed_cidrs = ["203.0.113.10/32", "198.51.100.24/32"]

@@ -21,8 +21,6 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = "INFO"
     BACKEND_CORS_ORIGINS: Annotated[list[AnyUrl] | str, BeforeValidator(parse_cors)] = []
     BUCKET_ENDPOINT: str
-    # Endpoint browsers use for presigned URLs (defaults to BUCKET_ENDPOINT).
-    BUCKET_PUBLIC_ENDPOINT: str | None = None
     BUCKET_ACCESS_KEY: str
     BUCKET_SECRET_KEY: str
     BUCKET_NAME: str
