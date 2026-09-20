@@ -55,7 +55,7 @@ performance cache that any worker may rebuild at any time.
    `docker compose run --rm api python -m scripts.create_admin`.
 
    The containers reach RDS through Docker's NAT, so their source address is the host's public IP and the
-   security group's `/32` rule covers them - no extra CIDR needed.
+   `allowed_cidrs` rule covers them - no extra entry needed for the containers.
 
 5. **Stop the environment:**
    ```bash
@@ -84,6 +84,32 @@ other one, so `aws_region` cannot be moved closer to home.
 
 **[`infra/README.md`](infra/README.md) is the deployment guide**: prerequisites, variables, apply, wiring up
 `.env.local`, verification, teardown and troubleshooting.
+
+## Working as a team
+
+One AWS stack, one database, one bucket - there is no per-developer isolation. Slides and annotations
+are shared, and a delete removes them for everyone.
+
+What each person needs:
+
+1. **Their IP in `allowed_cidrs`.** The database only accepts connections from the addresses listed in
+   `infra/terraform.tfvars`. Send `curl ifconfig.me` to whoever owns the Terraform state; they add the
+   `/32` and re-apply (~30s, security group only). Until then the backend simply hangs - AWS drops the
+   packets instead of refusing them, so there is no error message to search for. Repeat whenever an IP
+   changes, which routers and campus wifi do regularly.
+2. **A copy of `backend/.env.local`.** It is gitignored on purpose: it holds the RDS master password
+   and the IAM secret key. Pass it along out of band, never through the repository.
+3. **Nothing else.** No AWS account and no `~/.aws/credentials` - the app authenticates to S3 with the
+   `BUCKET_*` keys from `.env.local`. Only the person running Terraform needs AWS credentials.
+
+Then `docker compose up -d --build` in `backend/`, and `cp .env.example .env.local && npm install &&
+npm run dev` in `frontend/`. The `admin` account already exists in RDS - log in with the `ADMIN_*`
+values from `.env.local`.
+
+**Only one person runs Terraform.** `infra/terraform.tfstate` is local and gitignored, so a second
+`terraform apply` from another machine starts from empty state and tries to build everything again,
+failing with `DBInstanceAlreadyExists` and `BucketAlreadyOwnedByYou`. And `terraform destroy` from
+anyone takes the database and every slide with it - see [`infra/README.md`](infra/README.md).
 
 ## Slides
 

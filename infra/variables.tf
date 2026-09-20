@@ -38,7 +38,14 @@ variable "bucket_name" {
 
 # No default on purpose: the instance is publicly accessible, so an unset value must not silently
 # open PostgreSQL to the internet.
-variable "allowed_cidr" {
-  description = "CIDR block allowed to connect to the database, normally your own IP as a /32."
-  type        = string
+variable "allowed_cidrs" {
+  description = "CIDR blocks allowed to connect to the database: one /32 per developer (curl ifconfig.me)."
+  type        = list(string)
+
+  # An empty list would build a security group with no ingress rule at all, locking everyone out
+  # with the same silent timeout as a wrong address.
+  validation {
+    condition     = length(var.allowed_cidrs) > 0
+    error_message = "allowed_cidrs must list at least one CIDR block."
+  }
 }

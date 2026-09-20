@@ -62,9 +62,9 @@ cp terraform.tfvars.example terraform.tfvars   # gitignored by *.tfvars
 | `bucket_name` | Globally unique across all of AWS, not just your account. A taken name fails with `BucketAlreadyExists`. |
 | `db_password` | At least 16 characters, and none of `/ " @ # ?` or space. RDS rejects some of those outright, and the rest break the DSN that `app/core/config.py` builds — `MultiHostUrl.build` raises `ValidationError` instead of percent-encoding them. `openssl rand -hex 24` is a safe generator, and a `validation` block in `variables.tf` enforces the rule at plan time. |
 | `db_name`, `db_username` | Default to `wsi`. |
-| `allowed_cidr` | Your own public address as a `/32`: `curl ifconfig.me`. See the next section. |
+| `allowed_cidrs` | One `/32` per developer who needs to reach the database (`curl ifconfig.me` on each machine). See the next section. |
 
-## 2. Why `allowed_cidr` matters even though the database is public
+## 2. Why `allowed_cidrs` matters even though the database is public
 
 These are two different layers, and only one of them is a lock.
 
@@ -80,10 +80,13 @@ whose TCP connection to port 5432 AWS will accept.
 So `publicly_accessible` gives the database a street address; the security group decides who gets past
 the front door. With `0.0.0.0/0` every internet-wide Postgres scanner reaches the login prompt and the
 master password is the only thing between them and the data — and new RDS endpoints get found within
-hours, on predictable hostnames. With your `/32`, everyone else gets a silent timeout instead.
+hours, on predictable hostnames. With a list of `/32`s, everyone else gets a silent timeout instead.
 
-The price you pay: your IP changes when the router reboots, the DHCP lease renews, or you move to
-university wifi or a phone hotspot. Connections then hang until you update `allowed_cidr` and
+It is a list because the database is shared: every teammate who runs the backend needs their own
+address in it, and nobody can connect until theirs is added.
+
+The price you pay: an IP changes when the router reboots, the DHCP lease renews, or someone moves to
+university wifi or a phone hotspot. Connections then hang until you update `allowed_cidrs` and
 re-apply — a ~30 second security-group rule update, not a database restart.
 
 ## 3. Apply
@@ -146,15 +149,18 @@ uv run uvicorn app.main:app --reload --no-access-log
    upload a slide, then delete it. That exercises the whole IAM policy: `s3:PutObject` via presigned
    part PUTs plus the CORS rule, `s3:GetObject` during ingestion, and `s3:DeleteObject` on delete.
 
-## When your IP changes
+## When an IP changes, or a teammate joins
 
 Symptom: the API or `psql` hangs and eventually times out, with no error from AWS — the security group
 drops the packets rather than rejecting them.
 
 ```bash
-curl ifconfig.me                 # update allowed_cidr in terraform.tfvars
+curl ifconfig.me                 # on the machine that cannot connect
+                                 # add or replace that /32 in allowed_cidrs in terraform.tfvars
 terraform apply                  # ~30s, only the security group rule changes
 ```
+
+Only whoever holds `terraform.tfstate` can do this, because Terraform runs from one machine.
 
 ## Teardown
 
@@ -175,7 +181,7 @@ with no snapshot and no automated backup. Export anything you care about first.
 | `Invalid value for variable ... db_password must be at least 16 characters` | The password contains `/ " @ # ?` or a space, or is too short. |
 | `BucketAlreadyExists` | S3 bucket names are global; someone else has it. Pick another `bucket_name`. |
 | `no matching EC2 VPC found` | The account's default VPC in `eu-north-1` was deleted. Recreate it, or set explicit subnet IDs. |
-| Connection to 5432 times out | `allowed_cidr` no longer matches your IP, or the network blocks outbound 5432 — common on university and corporate wifi. A phone hotspot tells the two apart. |
+| Connection to 5432 times out | Your address is not in `allowed_cidrs` any more, or the network blocks outbound 5432 — common on university and corporate wifi. A phone hotspot tells the two apart. |
 
 ## Cost and state
 
