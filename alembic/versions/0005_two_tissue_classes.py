@@ -1,6 +1,6 @@
 """two tissue classes
 
-Annotation uses two classes: "Nowotwór (Rak)" and "Zrąb tkankowy"; unannotated tissue is negative.
+Annotation uses two classes: "Tkanka nowotworowa" and "Zrąb tkankowy"; unannotated tissue is negative.
 Annotations of the dropped "Tkanka zdrowa" (negative by definition) and "Inna struktura" (too heterogeneous
 to fold into stroma) are deleted. The downgrade restores the classes, not those annotations.
 

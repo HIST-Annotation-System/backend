@@ -29,7 +29,7 @@ annotation_classes = sa.table(
 )
 
 SEED_CLASSES = [
-    {'id': uuid.UUID('938c0669-fefc-4efa-90c7-1dde449bab73'), 'name': 'Nowotwór (Rak)', 'color': '#ef4444', 'sort_order': 1},
+    {'id': uuid.UUID('938c0669-fefc-4efa-90c7-1dde449bab73'), 'name': 'Tkanka nowotworowa', 'color': '#ef4444', 'sort_order': 1},
     {'id': uuid.UUID('67d20d2f-7fe3-40f6-a520-c045e5d509e1'), 'name': 'Tkanka zdrowa', 'color': '#22c55e', 'sort_order': 2},
     {'id': uuid.UUID('58b75e80-dd1b-4ee3-b5c7-a87ba83c7048'), 'name': 'Zrąb tkankowy', 'color': '#eab308', 'sort_order': 3},
     {'id': uuid.UUID('4ba7e2e9-a9dd-4bf1-8488-930044bfe1f4'), 'name': 'Inna struktura', 'color': '#a855f7', 'sort_order': 4},
