@@ -1,0 +1,121 @@
+import uuid
+
+from fastapi import APIRouter, Response, UploadFile, status
+from fastapi.responses import JSONResponse
+
+from app.core.constants import CONTENT_DISPOSITION_ATTACHMENT, MEDIA_TYPE_GEOJSON
+from app.dependencies.services import HotspotAnnotationServiceDep, HotspotServiceDep
+from app.schemas.annotations import AnnotationCreate, AnnotationRead, AnnotationUpdate
+from app.schemas.hotspots import HotspotCreate, HotspotFolderRead, HotspotFolderWrite, HotspotRead, HotspotUpdate
+from app.services.hotspot_images import UPLOAD_MAX_BYTES
+from app.services.slide_analysis import MEDIA_TYPE_JPEG
+
+HOTSPOT_ANNOTATIONS_EXPORT_FILENAME = "annotations_hotspot_{hotspot_id}.geojson"
+# A hotspot image never changes for a given id.
+IMMUTABLE_CACHE_HEADERS = {"Cache-Control": "public, max-age=31536000, immutable"}
+
+router = APIRouter()
+
+
+@router.get("/hotspot-folders", response_model=list[HotspotFolderRead])
+def list_folders(service: HotspotServiceDep) -> list[HotspotFolderRead]:
+    return service.list_folders()
+
+
+@router.post("/hotspot-folders", response_model=HotspotFolderRead, status_code=status.HTTP_201_CREATED)
+def create_folder(data: HotspotFolderWrite, service: HotspotServiceDep) -> HotspotFolderRead:
+    return service.create_folder(data.name)
+
+
+@router.patch("/hotspot-folders/{folder_id}", response_model=HotspotFolderRead)
+def rename_folder(folder_id: uuid.UUID, data: HotspotFolderWrite, service: HotspotServiceDep) -> HotspotFolderRead:
+    return service.rename_folder(folder_id, data.name)
+
+
+@router.delete("/hotspot-folders/{folder_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_folder(folder_id: uuid.UUID, service: HotspotServiceDep) -> None:
+    service.delete_folder(folder_id)
+
+
+@router.post(
+    "/hotspot-folders/{folder_id}/images", response_model=HotspotRead, status_code=status.HTTP_201_CREATED
+)
+def upload_hotspot_image(folder_id: uuid.UUID, file: UploadFile, service: HotspotServiceDep) -> HotspotRead:
+    """One PNG/JPEG file becomes a hotspot in the folder (the browser uploads several files one by one)."""
+    # One byte past the limit is enough to tell an oversized file apart without reading all of it.
+    data = file.file.read(UPLOAD_MAX_BYTES + 1)
+    return service.upload_image(folder_id, file.filename or "", data)
+
+
+@router.get("/hotspots", response_model=list[HotspotRead])
+def list_hotspots(service: HotspotServiceDep, folder_id: uuid.UUID | None = None) -> list[HotspotRead]:
+    return service.list_hotspots(folder_id)
+
+
+@router.post("/hotspots", response_model=HotspotRead, status_code=status.HTTP_201_CREATED)
+def create_hotspot(data: HotspotCreate, service: HotspotServiceDep) -> HotspotRead:
+    return service.create_hotspot(data)
+
+
+@router.get("/hotspots/{hotspot_id}", response_model=HotspotRead)
+def get_hotspot(hotspot_id: uuid.UUID, service: HotspotServiceDep) -> HotspotRead:
+    return service.get_hotspot(hotspot_id)
+
+
+@router.patch("/hotspots/{hotspot_id}", response_model=HotspotRead)
+def update_hotspot(hotspot_id: uuid.UUID, data: HotspotUpdate, service: HotspotServiceDep) -> HotspotRead:
+    return service.update_hotspot(hotspot_id, data)
+
+
+@router.delete("/hotspots/{hotspot_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_hotspot(hotspot_id: uuid.UUID, service: HotspotServiceDep) -> None:
+    service.delete_hotspot(hotspot_id)
+
+
+@router.get("/hotspots/{hotspot_id}/image")
+def get_hotspot_image(hotspot_id: uuid.UUID, service: HotspotServiceDep) -> Response:
+    data, media_type = service.get_image(hotspot_id)
+    return Response(data, media_type=media_type, headers=IMMUTABLE_CACHE_HEADERS)
+
+
+@router.get("/hotspots/{hotspot_id}/thumbnail")
+def get_hotspot_thumbnail(hotspot_id: uuid.UUID, service: HotspotServiceDep) -> Response:
+    return Response(service.get_thumbnail(hotspot_id), media_type=MEDIA_TYPE_JPEG, headers=IMMUTABLE_CACHE_HEADERS)
+
+
+@router.get("/hotspots/{hotspot_id}/annotations", response_model=list[AnnotationRead])
+def list_hotspot_annotations(hotspot_id: uuid.UUID, service: HotspotAnnotationServiceDep) -> list[AnnotationRead]:
+    return service.list_annotations(hotspot_id)
+
+
+@router.get("/hotspots/{hotspot_id}/annotations/export")
+def export_hotspot_annotations(hotspot_id: uuid.UUID, service: HotspotAnnotationServiceDep) -> JSONResponse:
+    filename = HOTSPOT_ANNOTATIONS_EXPORT_FILENAME.format(hotspot_id=hotspot_id)
+    return JSONResponse(
+        service.export_geojson(hotspot_id).model_dump(mode="json"),
+        media_type=MEDIA_TYPE_GEOJSON,
+        headers={"Content-Disposition": CONTENT_DISPOSITION_ATTACHMENT.format(filename=filename)},
+    )
+
+
+@router.post(
+    "/hotspots/{hotspot_id}/annotations", response_model=AnnotationRead, status_code=status.HTTP_201_CREATED
+)
+def create_hotspot_annotation(
+    hotspot_id: uuid.UUID, data: AnnotationCreate, service: HotspotAnnotationServiceDep
+) -> AnnotationRead:
+    return service.create_annotation(hotspot_id, data)
+
+
+@router.patch("/hotspots/{hotspot_id}/annotations/{annotation_id}", response_model=AnnotationRead)
+def update_hotspot_annotation(
+    hotspot_id: uuid.UUID, annotation_id: uuid.UUID, data: AnnotationUpdate, service: HotspotAnnotationServiceDep
+) -> AnnotationRead:
+    return service.update_annotation(hotspot_id, annotation_id, data)
+
+
+@router.delete("/hotspots/{hotspot_id}/annotations/{annotation_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_hotspot_annotation(
+    hotspot_id: uuid.UUID, annotation_id: uuid.UUID, service: HotspotAnnotationServiceDep
+) -> None:
+    service.delete_annotation(hotspot_id, annotation_id)

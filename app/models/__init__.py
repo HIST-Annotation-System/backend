@@ -3,6 +3,7 @@ from app.models.annotation import Annotation, AnnotationClass
 from app.models.base import Base
 from app.models.category import Category
 from app.models.group import AnnotationGroup
+from app.models.hotspot import Hotspot, HotspotAnnotation, HotspotFolder
 from app.models.profile import AnnotatorProfile
 from app.models.slide import Slide, SlideStatus
 
@@ -18,4 +19,7 @@ __all__ = [
     "AnnotatorProfile",
     "AnnotationGroup",
     "Category",
+    "HotspotFolder",
+    "Hotspot",
+    "HotspotAnnotation",
 ]

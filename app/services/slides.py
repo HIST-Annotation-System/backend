@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 import openslide
 from openslide.deepzoom import DeepZoomGenerator
+from PIL import Image
 
 from app.exceptions.errors import ConflictError, InvalidInputError, NotFoundError, StorageError
 from app.models.slide import Slide, SlideStatus
@@ -36,6 +37,7 @@ SLIDE_NOT_FOUND = "Slide {slide_id} does not exist."
 SLIDE_NOT_READY = "Slide {slide_id} is not ready (status: {status})."
 TILE_NOT_FOUND = "Tile {level}/{col}_{row} does not exist."
 REGION_OUTSIDE_SLIDE = "The requested region lies outside the slide."
+SQUARE_OUTSIDE_SLIDE = "The square must lie wholly inside the slide."
 
 
 @dataclass(frozen=True)
@@ -163,6 +165,14 @@ class SlideService:
             raise InvalidInputError(REGION_OUTSIDE_SLIDE)
         max_size = min(query.max_size, REGION_MAX_SIZE)
         return encode_png(read_region_image(slide, query.x, query.y, width, height, max_size))
+
+    def read_square(self, slide_id: uuid.UUID, x: int, y: int, size: int, max_size: int) -> Image.Image:
+        """A level-0 square lying wholly inside the slide, scaled so its side is at most `max_size` pixels."""
+        slide = self._open(slide_id).slide
+        slide_width, slide_height = slide.dimensions
+        if x + size > slide_width or y + size > slide_height:
+            raise InvalidInputError(SQUARE_OUTSIDE_SLIDE)
+        return read_region_image(slide, x, y, size, size, max_size)
 
     def _open(self, slide_id: uuid.UUID) -> OpenedSlide:
         # Cache hits never touch the database (SQLAlchemy sessions connect lazily).

@@ -1,10 +1,11 @@
 import uuid
-from typing import Any
+from collections.abc import Iterable
+from typing import Any, Protocol
 
 from pydantic import ValidationError
 
 from app.exceptions.errors import ConflictError, InvalidInputError, NotFoundError
-from app.models.annotation import Annotation
+from app.models.annotation import Annotation, AnnotationClass
 from app.models.slide import Slide
 from app.repositories.annotations import AnnotationRepository
 from app.repositories.slides import SlideRepository
@@ -24,21 +25,52 @@ from app.services.slides import require_slide
 ANNOTATION_NOT_FOUND = "Annotation {annotation_id} does not exist on this slide."
 ANNOTATION_ALREADY_EXISTS = "Annotation {annotation_id} already exists."
 ANNOTATION_CLASS_NOT_FOUND = "Annotation class {class_id} does not exist."
-POLYGON_OUTSIDE_SLIDE = "The polygon lies outside the slide."
+POLYGON_OUTSIDE_IMAGE = "The polygon lies outside the image."
 
 
 def _hex_to_rgb(color: str) -> tuple[int, int, int]:
     return int(color[1:3], 16), int(color[3:5], 16), int(color[5:7], 16)
 
 
-def _fit_to_slide(geometry: PolygonGeometry, slide: Slide) -> dict[str, Any]:
-    """Clamp vertices to the slide area (shapes may be drawn past the image edge)."""
-    width, height = float(slide.width or 0), float(slide.height or 0)
+def fit_to_bounds(geometry: PolygonGeometry, width: float, height: float) -> dict[str, Any]:
+    """Clamp vertices to the image area [0, width] x [0, height] (shapes may be drawn past its edge)."""
     ring = [(min(max(x, 0.0), width), min(max(y, 0.0), height)) for x, y in geometry.coordinates[0]]
     try:
         return PolygonGeometry(coordinates=[ring]).model_dump(mode="json")
     except ValidationError as exc:
-        raise InvalidInputError(POLYGON_OUTSIDE_SLIDE) from exc
+        raise InvalidInputError(POLYGON_OUTSIDE_IMAGE) from exc
+
+
+def _fit_to_slide(geometry: PolygonGeometry, slide: Slide) -> dict[str, Any]:
+    return fit_to_bounds(geometry, float(slide.width or 0), float(slide.height or 0))
+
+
+class ClassifiedPolygon(Protocol):
+    id: uuid.UUID
+    class_id: uuid.UUID
+    geometry: dict[str, Any]
+
+
+def build_feature_collection(
+    annotations: Iterable[ClassifiedPolygon], classes: Iterable[AnnotationClass]
+) -> AnnotationFeatureCollection:
+    """QuPath-compatible GeoJSON of the given annotations (coordinates as stored)."""
+    by_id = {item.id: item for item in classes}
+    return AnnotationFeatureCollection(
+        features=[
+            AnnotationFeature(
+                id=annotation.id,
+                geometry=PolygonGeometry.model_validate(annotation.geometry),
+                properties=AnnotationFeatureProperties(
+                    classification=AnnotationClassification(
+                        name=by_id[annotation.class_id].name,
+                        color=_hex_to_rgb(by_id[annotation.class_id].color),
+                    )
+                ),
+            )
+            for annotation in annotations
+        ]
+    )
 
 
 class AnnotationService:
@@ -83,22 +115,7 @@ class AnnotationService:
 
     def export_geojson(self, slide_id: uuid.UUID) -> AnnotationFeatureCollection:
         require_slide(self._slides, slide_id)
-        classes = {item.id: item for item in self._annotations.list_classes()}
-        return AnnotationFeatureCollection(
-            features=[
-                AnnotationFeature(
-                    id=annotation.id,
-                    geometry=PolygonGeometry.model_validate(annotation.geometry),
-                    properties=AnnotationFeatureProperties(
-                        classification=AnnotationClassification(
-                            name=classes[annotation.class_id].name,
-                            color=_hex_to_rgb(classes[annotation.class_id].color),
-                        )
-                    ),
-                )
-                for annotation in self._annotations.list_for_slide(slide_id)
-            ]
-        )
+        return build_feature_collection(self._annotations.list_for_slide(slide_id), self._annotations.list_classes())
 
     def _require_class(self, class_id: uuid.UUID) -> None:
         if self._annotations.get_class(class_id) is None:
