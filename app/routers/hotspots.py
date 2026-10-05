@@ -6,7 +6,15 @@ from fastapi.responses import JSONResponse
 from app.core.constants import CONTENT_DISPOSITION_ATTACHMENT, MEDIA_TYPE_GEOJSON
 from app.dependencies.services import HotspotAnnotationServiceDep, HotspotServiceDep
 from app.schemas.annotations import AnnotationCreate, AnnotationRead, AnnotationUpdate
-from app.schemas.hotspots import HotspotCreate, HotspotFolderRead, HotspotFolderWrite, HotspotRead, HotspotUpdate
+from app.schemas.hotspots import (
+    HotspotCreate,
+    HotspotFolderRead,
+    HotspotFolderWrite,
+    HotspotRead,
+    HotspotSort,
+    HotspotUpdate,
+    SortOrder,
+)
 from app.services.hotspot_images import UPLOAD_MAX_BYTES
 from app.services.slide_analysis import MEDIA_TYPE_JPEG
 
@@ -48,8 +56,13 @@ def upload_hotspot_image(folder_id: uuid.UUID, file: UploadFile, service: Hotspo
 
 
 @router.get("/hotspots", response_model=list[HotspotRead])
-def list_hotspots(service: HotspotServiceDep, folder_id: uuid.UUID | None = None) -> list[HotspotRead]:
-    return service.list_hotspots(folder_id)
+def list_hotspots(
+    service: HotspotServiceDep,
+    folder_id: uuid.UUID | None = None,
+    sort: HotspotSort = HotspotSort.CREATED_AT,
+    order: SortOrder = SortOrder.DESC,
+) -> list[HotspotRead]:
+    return service.list_hotspots(folder_id, sort, order)
 
 
 @router.post("/hotspots", response_model=HotspotRead, status_code=status.HTTP_201_CREATED)

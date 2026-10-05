@@ -25,6 +25,15 @@ class HotspotImageType(enum.StrEnum):
     JPEG = "jpeg"
 
 
+class HotspotFeature(enum.StrEnum):
+    """Image descriptors the catalog can be sorted by (see app.services.hotspot_features)."""
+
+    ENTROPY = "entropy"
+    GLCM_CONTRAST = "glcm_contrast"
+    EDGE_DENSITY = "edge_density"
+    COLORFULNESS = "colorfulness"
+
+
 # Must stay >= the longest HotspotImageType value.
 HOTSPOT_IMAGE_TYPE_MAX_LENGTH = 8
 
@@ -64,6 +73,8 @@ class Hotspot(Base):
     )
     # Microns per pixel of the stored image, when the slide reports its resolution.
     mpp: Mapped[float | None]
+    # HotspotFeature value -> descriptor of the thumbnail; null (or missing a key) until computed.
+    features: Mapped[dict[str, float] | None] = mapped_column(JsonType)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

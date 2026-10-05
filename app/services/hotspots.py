@@ -1,14 +1,16 @@
+import logging
 import uuid
 from pathlib import PurePath
 
 from sqlalchemy.exc import IntegrityError
 
 from app.core.constants import NAME_MAX_LENGTH
-from app.exceptions.errors import ConflictError, NotFoundError
-from app.models.hotspot import Hotspot, HotspotFolder
+from app.exceptions.errors import ConflictError, NotFoundError, StorageError
+from app.models.hotspot import Hotspot, HotspotFeature, HotspotFolder
 from app.repositories.hotspots import HotspotRepository
 from app.repositories.slides import SlideRepository
-from app.schemas.hotspots import HotspotCreate, HotspotFolderRead, HotspotRead, HotspotUpdate
+from app.schemas.hotspots import HotspotCreate, HotspotFolderRead, HotspotRead, HotspotSort, HotspotUpdate, SortOrder
+from app.services.hotspot_features import compute_features
 from app.services.hotspot_images import EXTENSIONS, MEDIA_TYPES, EncodedImage, decode_upload, encode_captured
 from app.services.slide_analysis import MEDIA_TYPE_JPEG
 from app.services.slides import SlideService, require_slide
@@ -23,6 +25,8 @@ UPLOADED_IMAGE_DEFAULT_NAME = "Obraz"
 FOLDER_NOT_FOUND = "Hotspot folder {folder_id} does not exist."
 FOLDER_NAME_TAKEN = "A hotspot folder named '{name}' already exists."
 HOTSPOT_NOT_FOUND = "Hotspot {hotspot_id} does not exist."
+
+logger = logging.getLogger(__name__)
 
 
 def require_hotspot(hotspots: HotspotRepository, hotspot_id: uuid.UUID) -> Hotspot:
@@ -72,8 +76,26 @@ class HotspotService:
         for hotspot_id in hotspot_ids:
             self._storage.delete_prefix(HOTSPOT_OBJECTS_PREFIX.format(hotspot_id=hotspot_id))
 
-    def list_hotspots(self, folder_id: uuid.UUID | None) -> list[HotspotRead]:
-        return [HotspotRead.model_validate(item) for item in self._hotspots.list_hotspots(folder_id)]
+    def list_hotspots(
+        self,
+        folder_id: uuid.UUID | None,
+        sort: HotspotSort = HotspotSort.CREATED_AT,
+        order: SortOrder = SortOrder.DESC,
+    ) -> list[HotspotRead]:
+        """Hotspots ordered by creation time or by an image feature (ties and missing values: newest first;
+        hotspots whose feature could not be computed always come last).
+        """
+        hotspots = list(self._hotspots.list_hotspots(folder_id))  # newest first
+        self._fill_missing_features(hotspots)
+        if sort != HotspotSort.CREATED_AT:
+            known = [hotspot for hotspot in hotspots if hotspot.features and sort.value in hotspot.features]
+            unknown = [hotspot for hotspot in hotspots if not (hotspot.features and sort.value in hotspot.features)]
+            # A stable sort keeps the newest-first order among equal values.
+            known.sort(key=lambda hotspot: (hotspot.features or {})[sort.value], reverse=order == SortOrder.DESC)
+            hotspots = known + unknown
+        elif order == SortOrder.ASC:
+            hotspots.reverse()
+        return [HotspotRead.model_validate(item) for item in hotspots]
 
     def get_hotspot(self, hotspot_id: uuid.UUID) -> HotspotRead:
         return HotspotRead.model_validate(require_hotspot(self._hotspots, hotspot_id))
@@ -127,9 +149,28 @@ class HotspotService:
         require_hotspot(self._hotspots, hotspot_id)
         return self._storage.get_bytes(HOTSPOT_THUMBNAIL_KEY.format(hotspot_id=hotspot_id))
 
+    def _fill_missing_features(self, hotspots: list[Hotspot]) -> None:
+        """Compute the features of hotspots stored before they existed (or before a feature was added)."""
+        expected = set(HotspotFeature)
+        changed = []
+        for hotspot in hotspots:
+            if hotspot.features is not None and expected <= hotspot.features.keys():
+                continue
+            try:
+                thumbnail = self._storage.get_bytes(HOTSPOT_THUMBNAIL_KEY.format(hotspot_id=hotspot.id))
+                hotspot.features = compute_features(thumbnail)
+            except (StorageError, OSError, ValueError):
+                # An unreadable thumbnail only leaves this hotspot unsorted; it is retried on the next listing.
+                logger.warning("Could not compute features of hotspot %s", hotspot.id, exc_info=True)
+                continue
+            changed.append(hotspot)
+        if changed:
+            self._hotspots.save_all(changed)
+
     def _store(self, hotspot: Hotspot, image: EncodedImage) -> HotspotRead:
         """Upload the images, then save the row (dropping the images again if that fails)."""
         hotspot.image_width, hotspot.image_height, hotspot.image_type = image.width, image.height, image.image_type
+        hotspot.features = compute_features(image.thumbnail)
         image_key = HOTSPOT_IMAGE_KEY.format(hotspot_id=hotspot.id, extension=EXTENSIONS[image.image_type])
         self._storage.put_bytes(image_key, image.data, MEDIA_TYPES[image.image_type])
         self._storage.put_bytes(HOTSPOT_THUMBNAIL_KEY.format(hotspot_id=hotspot.id), image.thumbnail, MEDIA_TYPE_JPEG)

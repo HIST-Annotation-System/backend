@@ -1,3 +1,4 @@
+import enum
 import uuid
 from datetime import datetime
 from typing import Annotated, Self
@@ -5,11 +6,26 @@ from typing import Annotated, Self
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
 from app.core.constants import NAME_MAX_LENGTH, NAME_MIN_LENGTH
-from app.models.hotspot import HotspotImageType
+from app.models.hotspot import HotspotFeature, HotspotImageType
 
 HOTSPOT_UPDATE_EMPTY = "Provide name and/or folder_id."
 
 Name = Annotated[str, StringConstraints(strip_whitespace=True, min_length=NAME_MIN_LENGTH, max_length=NAME_MAX_LENGTH)]
+
+
+class HotspotSort(enum.StrEnum):
+    """What the catalog is ordered by: creation time, or one of the HotspotFeature descriptors."""
+
+    CREATED_AT = "created_at"
+    ENTROPY = HotspotFeature.ENTROPY.value
+    GLCM_CONTRAST = HotspotFeature.GLCM_CONTRAST.value
+    EDGE_DENSITY = HotspotFeature.EDGE_DENSITY.value
+    COLORFULNESS = HotspotFeature.COLORFULNESS.value
+
+
+class SortOrder(enum.StrEnum):
+    ASC = "asc"
+    DESC = "desc"
 
 
 class HotspotFolderWrite(BaseModel):
@@ -63,4 +79,6 @@ class HotspotRead(BaseModel):
     image_height: int
     image_type: HotspotImageType
     mpp: float | None
+    # HotspotFeature value -> descriptor; null when it could not be computed (e.g. missing thumbnail).
+    features: dict[str, float] | None
     created_at: datetime

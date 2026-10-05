@@ -61,6 +61,10 @@ class HotspotRepository:
             raise
         return entity
 
+    def save_all(self, hotspots: Sequence[Hotspot]) -> None:
+        self._session.add_all(hotspots)
+        self._session.commit()
+
     def delete(self, entity: HotspotFolder | Hotspot | HotspotAnnotation) -> None:
         # Hotspots and their annotations go with their folder/hotspot through ON DELETE CASCADE.
         self._session.delete(entity)
