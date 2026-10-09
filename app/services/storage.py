@@ -23,6 +23,8 @@ logger = logging.getLogger(__name__)
 
 PRESIGNED_URL_EXPIRATION_SECONDS = 3600
 STORAGE_UNAVAILABLE = "Object storage is unavailable."
+# Generous enough that a single request covers a normal-sized bucket level; the browser pages via next_token.
+BROWSE_PAGE_SIZE = 500
 
 
 @dataclass(frozen=True)
@@ -30,6 +32,22 @@ class StorageObject:
     key: str
     size: int
     last_modified: datetime
+
+
+@dataclass(frozen=True)
+class StoragePage:
+    """One level of a `list_objects` browse: subfolders (common prefixes) and objects."""
+
+    prefixes: list[str]
+    objects: list[StorageObject]
+    next_token: str | None
+
+
+@dataclass(frozen=True)
+class StoredPart:
+    number: int
+    etag: str
+    size: int
 
 
 class ObjectStorage(Protocol):
@@ -41,6 +59,8 @@ class ObjectStorage(Protocol):
 
     def complete_multipart_upload(self, key: str, upload_id: str, etags: dict[int, str]) -> None: ...
 
+    def list_parts(self, key: str, upload_id: str) -> list[StoredPart]: ...
+
     def head_size(self, key: str) -> int: ...
 
     def download_file(self, key: str, path: Path, on_progress: Callable[[int], None] | None = None) -> None: ...
@@ -48,6 +68,10 @@ class ObjectStorage(Protocol):
     def put_bytes(self, key: str, data: bytes, content_type: str) -> None: ...
 
     def get_bytes(self, key: str) -> bytes: ...
+
+    def list_objects(self, prefix: str, continuation_token: str | None) -> StoragePage: ...
+
+    def get_presigned_get_url(self, key: str) -> str: ...
 
     def iter_keys(self, prefix: str) -> Iterator[StorageObject]: ...
 
@@ -121,6 +145,16 @@ class ObjectStorageService:
                 MultipartUpload={"Parts": [{"PartNumber": part, "ETag": etags[part]} for part in sorted(etags)]},
             )
 
+    def list_parts(self, key: str, upload_id: str) -> list[StoredPart]:
+        """Parts already uploaded to an in-progress multipart upload (NoSuchUpload once it is aborted)."""
+        with _storage_errors():
+            pages = self._client.get_paginator("list_parts").paginate(Bucket=self._bucket, Key=key, UploadId=upload_id)
+            return [
+                StoredPart(number=part["PartNumber"], etag=part["ETag"].strip('"'), size=part["Size"])
+                for page in pages
+                for part in page.get("Parts", [])
+            ]
+
     def head_size(self, key: str) -> int:
         with _storage_errors():
             return self._client.head_object(Bucket=self._bucket, Key=key)["ContentLength"]
@@ -138,6 +172,38 @@ class ObjectStorageService:
     def get_bytes(self, key: str) -> bytes:
         with _storage_errors():
             return self._client.get_object(Bucket=self._bucket, Key=key)["Body"].read()
+
+    def list_objects(self, prefix: str, continuation_token: str | None) -> StoragePage:
+        with _storage_errors():
+            if continuation_token:
+                response = self._client.list_objects_v2(
+                    Bucket=self._bucket,
+                    Prefix=prefix,
+                    Delimiter="/",
+                    MaxKeys=BROWSE_PAGE_SIZE,
+                    ContinuationToken=continuation_token,
+                )
+            else:
+                response = self._client.list_objects_v2(
+                    Bucket=self._bucket, Prefix=prefix, Delimiter="/", MaxKeys=BROWSE_PAGE_SIZE
+                )
+            objects = [
+                StorageObject(key=item["Key"], size=item["Size"], last_modified=item["LastModified"])
+                for item in response.get("Contents", [])
+                # A folder created in the S3 console is a zero-byte object named after the prefix itself.
+                if item["Key"] != prefix
+            ]
+            prefixes = [item["Prefix"] for item in response.get("CommonPrefixes", [])]
+            next_token = response.get("NextContinuationToken") if response.get("IsTruncated") else None
+            return StoragePage(prefixes=prefixes, objects=objects, next_token=next_token)
+
+    def get_presigned_get_url(self, key: str) -> str:
+        with _storage_errors():
+            return self._client.generate_presigned_url(
+                ClientMethod="get_object",
+                Params={"Bucket": self._bucket, "Key": key},
+                ExpiresIn=PRESIGNED_URL_EXPIRATION_SECONDS,
+            )
 
     def iter_keys(self, prefix: str) -> Iterator[StorageObject]:
         """Every object under `prefix`, at any depth (unlike the one-level `list_objects` browse)."""

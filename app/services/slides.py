@@ -10,7 +10,7 @@ from PIL import Image
 from app.exceptions.errors import ConflictError, InvalidInputError, NotFoundError, StorageError
 from app.models.slide import Slide, SlideStatus
 from app.repositories.slides import SlideRepository
-from app.schemas.slides import REGION_MAX_SIZE, RegionQuery, SlideDetail, SlideRead
+from app.schemas.slides import REGION_MAX_SIZE, RegionQuery, SlideDetail, SlideRead, slide_version
 from app.services.slide_analysis import (
     MEDIA_TYPE_JPEG,
     encode_jpeg,
@@ -34,6 +34,9 @@ DZI_TILE_SIZE = 254
 DZI_OVERLAP = 1
 SLIDE_HANDLE_CACHE_SIZE = 16
 SLIDE_NOT_FOUND = "Slide {slide_id} does not exist."
+SLIDE_MODIFIED = "Slide {slide_id} was changed by someone else in the meantime (it is now named '{name}')."
+SLIDE_NOT_FOUND_CODE = "slide_not_found"
+SLIDE_MODIFIED_CODE = "slide_modified"
 SLIDE_NOT_READY = "Slide {slide_id} is not ready (status: {status})."
 TILE_NOT_FOUND = "Tile {level}/{col}_{row} does not exist."
 REGION_OUTSIDE_SLIDE = "The requested region lies outside the slide."
@@ -81,10 +84,13 @@ class SlideHandleCache:
             self._entries.pop(slide_id, None)
 
 
-def require_slide(slides: SlideRepository, slide_id: uuid.UUID, *, ready: bool = False) -> Slide:
-    slide = slides.get(slide_id)
+def require_slide(
+    slides: SlideRepository, slide_id: uuid.UUID, *, ready: bool = False, for_update: bool = False
+) -> Slide:
+    """The slide or 404; `for_update` row-locks it until the next commit (see `get_for_update`)."""
+    slide = slides.get_for_update(slide_id) if for_update else slides.get(slide_id)
     if slide is None:
-        raise NotFoundError(SLIDE_NOT_FOUND.format(slide_id=slide_id))
+        raise NotFoundError(SLIDE_NOT_FOUND.format(slide_id=slide_id), SLIDE_NOT_FOUND_CODE)
     if ready and slide.status != SlideStatus.READY:
         raise ConflictError(SLIDE_NOT_READY.format(slide_id=slide_id, status=slide.status))
     return slide
@@ -111,16 +117,19 @@ class SlideService:
     def get_slide(self, slide_id: uuid.UUID) -> SlideDetail:
         return SlideDetail.model_validate(require_slide(self._slides, slide_id))
 
-    def rename_slide(self, slide_id: uuid.UUID, name: str) -> SlideRead:
-        slide = require_slide(self._slides, slide_id)
+    def rename_slide(self, slide_id: uuid.UUID, name: str, expected_version: str | None = None) -> SlideRead:
+        slide = self._lock_unchanged(slide_id, expected_version)
         slide.name = name
         return SlideRead.model_validate(self._slides.save(slide))
 
-    def delete_slide(self, slide_id: uuid.UUID) -> None:
-        slide = require_slide(self._slides, slide_id)
+    def delete_slide(self, slide_id: uuid.UUID, expected_version: str | None = None) -> None:
+        slide = self._lock_unchanged(slide_id, expected_version)
         self._handles.evict(slide_id)
         self._files.purge(slide_id)
         slide_prefix = SLIDE_OBJECTS_PREFIX.format(slide_id=slide_id)
+        if slide.status == SlideStatus.UPLOADING:
+            # An interrupted upload's parts are invisible to listings but still stored (and billed).
+            self._storage.abort_multipart_uploads(slide.storage_key)
         self._storage.delete_prefix(slide_prefix)
         # Imported slides keep their objects outside the prefix (imports never overlap another slide's).
         if not slide.storage_key.startswith(slide_prefix):
@@ -173,6 +182,13 @@ class SlideService:
         if x + size > slide_width or y + size > slide_height:
             raise InvalidInputError(SQUARE_OUTSIDE_SLIDE)
         return read_region_image(slide, x, y, size, size, max_size)
+
+    def _lock_unchanged(self, slide_id: uuid.UUID, expected_version: str | None) -> Slide:
+        """The slide, row-locked, provided it still is the version the client last saw (if it sent one)."""
+        slide = require_slide(self._slides, slide_id, for_update=True)
+        if expected_version is not None and expected_version != slide_version(slide.name):
+            raise ConflictError(SLIDE_MODIFIED.format(slide_id=slide_id, name=slide.name), SLIDE_MODIFIED_CODE)
+        return slide
 
     def _open(self, slide_id: uuid.UUID) -> OpenedSlide:
         # Cache hits never touch the database (SQLAlchemy sessions connect lazily).

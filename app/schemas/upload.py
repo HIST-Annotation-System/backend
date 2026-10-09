@@ -12,6 +12,14 @@ PartNumber = Annotated[int, Field(gt=0, le=MULTIPART_UPLOAD_MAX_PARTS)]
 
 class StartUploadRequest(BaseModel):
     filename: str = Field(min_length=NAME_MIN_LENGTH, max_length=NAME_MAX_LENGTH)
+    # Known up front so a second upload of the same file is caught before any byte is sent.
+    file_size: int | None = Field(default=None, ge=0)
+    # Set after the user confirmed they really want another copy of a file already in the library.
+    allow_duplicate: bool = False
+
+
+class UploadProgressRequest(BaseModel):
+    percent: int = Field(ge=0, le=100)
 
 
 class StartUploadResponse(BaseModel):
@@ -56,3 +64,15 @@ class ImportFromStorageRequest(BaseModel):
 
 class ImportFromStorageResponse(BaseModel):
     slide_id: uuid.UUID
+    # False when the object had already been imported: the existing slide is returned instead.
+    created: bool
+
+
+class UploadedPart(UploadPart):
+    Size: int
+
+
+class UploadedPartsResponse(BaseModel):
+    """Parts already in storage, so an interrupted browser upload can send only the missing ones."""
+
+    parts: list[UploadedPart]

@@ -2,6 +2,7 @@
 
 import os
 import shutil
+import threading
 import uuid
 import zipfile
 from collections.abc import Callable
@@ -25,10 +26,26 @@ ARCHIVE_TOO_LARGE = "The archive is too large once extracted."
 UNSAFE_ARCHIVE_ENTRY = "Archive entry '{name}' has an unsafe path."
 
 
+class SlideDownloadLocks:
+    """One lock per slide, so concurrent requests for a slide not cached yet download it only once.
+
+    Process-wide (built in the lifespan); locks are tiny and slides few, so they are never dropped.
+    """
+
+    def __init__(self) -> None:
+        self._locks: dict[uuid.UUID, threading.Lock] = {}
+        self._guard = threading.Lock()
+
+    def get(self, slide_id: uuid.UUID) -> threading.Lock:
+        with self._guard:
+            return self._locks.setdefault(slide_id, threading.Lock())
+
+
 class SlideFileService:
-    def __init__(self, storage: ObjectStorage, cache_dir: Path) -> None:
+    def __init__(self, storage: ObjectStorage, cache_dir: Path, locks: SlideDownloadLocks) -> None:
         self._storage = storage
         self._cache_dir = cache_dir
+        self._locks = locks
 
     def entry_path(self, slide: Slide) -> Path:
         """The file OpenSlide should open for `slide`, downloading the slide first if needed."""
@@ -40,12 +57,21 @@ class SlideFileService:
         """Ensure the slide's files exist in the cache and return their directory.
 
         The download happens in a temporary directory that is renamed atomically, so concurrent workers
-        never see a partial copy; if another worker finished first, its copy is kept. `on_progress`,
-        when given, is called with each chunk's byte count as the file downloads (see `ObjectStorage`).
+        never see a partial copy; within this process, concurrent callers wait for the first one's
+        download instead of starting their own. `on_progress`, when given, is called with each chunk's
+        byte count as the file downloads (see `ObjectStorage`).
         """
         slide_dir = self._cache_dir / str(slide_id)
         if slide_dir.is_dir():
             return slide_dir
+        with self._locks.get(slide_id):
+            if slide_dir.is_dir():
+                return slide_dir
+            return self._download(slide_id, storage_key, slide_dir, on_progress)
+
+    def _download(
+        self, slide_id: uuid.UUID, storage_key: str, slide_dir: Path, on_progress: Callable[[int], None] | None
+    ) -> Path:
         temp_dir = self._cache_dir / f"{slide_id}.tmp-{uuid.uuid4().hex}"
         archive = temp_dir.with_name(f"{temp_dir.name}{ARCHIVE_SUFFIX}")
         temp_dir.mkdir(parents=True)

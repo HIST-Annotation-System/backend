@@ -1,12 +1,16 @@
 import enum
 import uuid
 from datetime import datetime
+from typing import TYPE_CHECKING
 
-from sqlalchemy import BigInteger, DateTime, Enum, String, Text, func
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy import BigInteger, DateTime, Enum, ForeignKey, String, Text, func
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.constants import NAME_MAX_LENGTH, STORAGE_KEY_MAX_LENGTH
 from app.models.base import Base, JsonType
+
+if TYPE_CHECKING:
+    from app.models.account import Account
 
 
 class SlideStatus(enum.StrEnum):
@@ -46,8 +50,8 @@ class Slide(Base):
         index=True,
     )
     error_message: Mapped[str | None] = mapped_column(Text)
-    # 0-100 while downloading the file during ingestion; None before/after (upload progress is
-    # tracked client-side, and there's nothing left to report once the slide is ready/failed).
+    # 0-100: while `uploading`, as last reported by the uploading browser (so other admins see it too);
+    # while `processing`, the download progress of ingestion. None otherwise.
     ingest_progress: Mapped[int | None]
     vendor: Mapped[str | None] = mapped_column(String(VENDOR_MAX_LENGTH))
     width: Mapped[int | None]
@@ -61,3 +65,12 @@ class Slide(Base):
     tissue_bbox: Mapped[dict[str, int] | None] = mapped_column(JsonType)
     properties: Mapped[dict[str, str]] = mapped_column(JsonType, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    # The admin who uploaded or imported the slide; None for slides added before this was recorded
+    # and once that account is deleted.
+    uploaded_by_id: Mapped[int | None] = mapped_column(ForeignKey("accounts.id", ondelete="SET NULL"), index=True)
+    # Joined: every slide listing shows the uploader, so it must not cost a query per slide.
+    uploaded_by: Mapped["Account | None"] = relationship(lazy="joined")
+
+    @property
+    def uploaded_by_name(self) -> str | None:
+        return self.uploaded_by.username if self.uploaded_by is not None else None

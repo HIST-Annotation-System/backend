@@ -70,3 +70,7 @@ class RequireRole:
                 detail="Not enough privileges"
             )
         return current_user
+
+
+require_admin = RequireRole(Role.ADMIN)
+AdminDep = Annotated[Account, Depends(require_admin)]

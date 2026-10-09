@@ -1,12 +1,23 @@
+import hashlib
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, computed_field
 
 from app.core.constants import NAME_MAX_LENGTH, NAME_MIN_LENGTH
 from app.models.slide import SlideStatus
 
 REGION_MAX_SIZE = 2048
+SLIDE_VERSION_LENGTH = 16
+
+
+def slide_version(name: str) -> str:
+    """Optimistic-concurrency token of a slide, sent back by clients in `If-Match` on rename/delete.
+
+    Derived from the only user-editable field instead of a stored counter, so it needs no schema
+    change; status/progress are left out so a background ingest never turns an edit into a conflict.
+    """
+    return hashlib.sha256(name.encode()).hexdigest()[:SLIDE_VERSION_LENGTH]
 
 
 class Offset(BaseModel):
@@ -38,6 +49,13 @@ class SlideRead(BaseModel):
     image_offset: Offset
     tissue_bbox: Rect | None
     created_at: datetime
+    # Username of the admin who uploaded/imported it - shown while the upload is still running, too.
+    uploaded_by: str | None = Field(validation_alias="uploaded_by_name")
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def version(self) -> str:
+        return slide_version(self.name)
 
 
 class SlideDetail(SlideRead):

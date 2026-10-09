@@ -6,13 +6,14 @@ import uuid
 
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.requests import Request
-from starlette.responses import Response
+from starlette.responses import JSONResponse, Response
 
 from app.core.logging import request_id_var
 
 logger = logging.getLogger("app.request")
 
 REQUEST_ID_HEADER = "X-Request-ID"
+INTERNAL_ERROR = "Internal server error."
 
 
 class RequestLoggingMiddleware(BaseHTTPMiddleware):
@@ -36,7 +37,12 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
                     "request failed",
                     extra={"method": request.method, "path": request.url.path, "duration_ms": duration_ms},
                 )
-                raise
+                # Answered here, inside CORSMiddleware: an unhandled exception would otherwise reach the
+                # outermost error middleware and leave without CORS headers, so the browser reports a
+                # bare "Network Error" instead of a 500.
+                return JSONResponse(
+                    status_code=500, content={"detail": INTERNAL_ERROR}, headers={REQUEST_ID_HEADER: request_id}
+                )
             duration_ms = round((time.perf_counter() - start) * 1000, 2)
             response.headers[REQUEST_ID_HEADER] = request_id
             logger.info(

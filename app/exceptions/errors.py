@@ -11,9 +11,11 @@ class AppError(Exception):
 
     status_code = status.HTTP_400_BAD_REQUEST
 
-    def __init__(self, message: str) -> None:
+    def __init__(self, message: str, code: str | None = None) -> None:
         super().__init__(message)
         self.message = message
+        # Machine-readable reason, for clients that react to a specific error (e.g. an edit conflict).
+        self.code = code
 
 
 class NotFoundError(AppError):
@@ -44,7 +46,8 @@ def _app_error_handler(request: Request, exc: Exception) -> JSONResponse:
         exc.message,
         extra={"path": request.url.path, "status_code": exc.status_code},
     )
-    return JSONResponse(status_code=exc.status_code, content={"detail": exc.message})
+    content = {"detail": exc.message} if exc.code is None else {"detail": exc.message, "code": exc.code}
+    return JSONResponse(status_code=exc.status_code, content=content)
 
 
 def register_exception_handlers(app: FastAPI) -> None:

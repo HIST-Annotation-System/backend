@@ -3,11 +3,13 @@ import math
 import threading
 import uuid
 from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import openslide
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.orm.exc import ObjectDeletedError, StaleDataError
 
 from app.exceptions.errors import AppError, InvalidInputError
 from app.models.slide import Slide, SlideStatus
@@ -28,6 +30,9 @@ logger = logging.getLogger(__name__)
 
 PROCESSING_FAILED = "Unexpected error while processing the slide."
 INGEST_INTERRUPTED = "Ingestion was interrupted; upload the slide again."
+# Every teammate runs an API against the same database, so at startup only slides stuck far longer
+# than any real ingest are failed - never one another instance is still processing right now.
+INGEST_STALE_AFTER = timedelta(hours=3)
 # Progress is committed at most every few percent: it is only a progress bar.
 INGEST_PROGRESS_STEP = 5
 VENDOR_MISMATCH = "'{filename}' contains {vendor} data, which doesn't match its extension."
@@ -35,10 +40,24 @@ MISSING_MPP = "The slide has no resolution (MPP) metadata."
 NOT_PYRAMIDAL = "The slide is not pyramidal (e.g. a flat or OME-TIFF). Convert it to a pyramidal tiled TIFF or SVS."
 
 
-def fail_interrupted_ingests(session_factory: sessionmaker[Session]) -> None:
-    """Fails slides left in `processing` by a previous process; ingestion is in-process, so they can't resume."""
+class SlideDeletedError(Exception):
+    """The slide was deleted (by another request) while it was being ingested."""
+
+
+# What touching a slide row that another request deleted raises, depending on the moment it happens.
+SLIDE_DELETED_ERRORS = (SlideDeletedError, StaleDataError, ObjectDeletedError)
+
+
+def fail_interrupted_ingests(session_factory: sessionmaker[Session], now: datetime | None = None) -> None:
+    """Fails slides left in `processing` by a crashed process; ingestion is in-process, so they can't resume.
+
+    Only slides older than `INGEST_STALE_AFTER`: younger ones may be in progress on another instance.
+    """
+    cutoff = (now or datetime.now(UTC)) - INGEST_STALE_AFTER
     with session_factory() as session:
-        interrupted = session.scalars(select(Slide).where(Slide.status == SlideStatus.PROCESSING)).all()
+        interrupted = session.scalars(
+            select(Slide).where(Slide.status == SlideStatus.PROCESSING, Slide.created_at < cutoff)
+        ).all()
         for slide in interrupted:
             slide.status, slide.error_message, slide.ingest_progress = SlideStatus.FAILED, INGEST_INTERRUPTED, None
         session.commit()
@@ -94,19 +113,39 @@ class SlideIngestService:
                 logger.warning("Ingest skipped: slide %s does not exist", slide_id)
                 return
             try:
-                self._process(slide, slides)
-                slide.status, slide.error_message = SlideStatus.READY, None
-            except AppError as exc:
-                logger.warning("Slide %s failed processing: %s", slide_id, exc.message)
-                slide.status, slide.error_message = SlideStatus.FAILED, exc.message
-            except Exception:
-                # A background job must never leave the slide stuck in "processing".
-                logger.exception("Unexpected error while processing slide %s", slide_id)
-                slide.status, slide.error_message = SlideStatus.FAILED, PROCESSING_FAILED
-            slide.ingest_progress = None
-            slides.save(slide)
+                self._ingest(slide, slides)
+            except SLIDE_DELETED_ERRORS:
+                session.rollback()
+                self._discard_outputs(slide_id)
+                logger.info("Slide %s was deleted during ingestion; its outputs were discarded", slide_id)
 
-    def _process(self, slide: Slide, slides: SlideRepository) -> None:
+    def _ingest(self, slide: Slide, slides: SlideRepository) -> None:
+        try:
+            thumbnail = self._process(slide, slides)
+            # Don't recreate objects under the prefix of a slide someone deleted meanwhile.
+            if not slides.exists(slide.id):
+                raise SlideDeletedError
+            self._storage.put_bytes(THUMBNAIL_OBJECT_KEY.format(slide_id=slide.id), thumbnail, MEDIA_TYPE_JPEG)
+            slide.status, slide.error_message = SlideStatus.READY, None
+        except SLIDE_DELETED_ERRORS:
+            raise
+        except AppError as exc:
+            logger.warning("Slide %s failed processing: %s", slide.id, exc.message)
+            slide.status, slide.error_message = SlideStatus.FAILED, exc.message
+        except Exception:
+            # A background job must never leave the slide stuck in "processing".
+            logger.exception("Unexpected error while processing slide %s", slide.id)
+            slide.status, slide.error_message = SlideStatus.FAILED, PROCESSING_FAILED
+        slide.ingest_progress = None
+        slides.save(slide)
+
+    def _discard_outputs(self, slide_id: uuid.UUID) -> None:
+        """Removes what ingestion may have produced after the slide's own deletion cleaned up."""
+        self._files.purge(slide_id)
+        self._storage.delete_objects([THUMBNAIL_OBJECT_KEY.format(slide_id=slide_id)])
+
+    def _process(self, slide: Slide, slides: SlideRepository) -> bytes:
+        """Validates and analyses the slide, filling in its metadata; returns its thumbnail."""
         # All fallible work happens before the slide is modified.
         slide_dir = self._files.materialize(slide.id, slide.storage_key, self._download_progress(slide, slides))
         entry = find_slide_entry(slide_dir)
@@ -118,7 +157,6 @@ class SlideIngestService:
             _require_usable_slide(properties, (width, height), level_count)
             tissue_bbox = detect_tissue_bbox(handle)
             thumbnail = render_thumbnail(handle, tissue_bbox)
-        self._storage.put_bytes(THUMBNAIL_OBJECT_KEY.format(slide_id=slide.id), thumbnail, MEDIA_TYPE_JPEG)
 
         slide.vendor = properties.get(openslide.PROPERTY_NAME_VENDOR)
         slide.width, slide.height, slide.level_count = width, height, level_count
@@ -131,6 +169,7 @@ class SlideIngestService:
         }
         slide.tissue_bbox = tissue_bbox
         slide.properties = properties
+        return thumbnail
 
     def _download_progress(self, slide: Slide, slides: SlideRepository) -> Callable[[int], None]:
         """A boto3 download Callback that commits `slide.ingest_progress` as bytes come in.
@@ -153,6 +192,11 @@ class SlideIngestService:
                 if percent >= state["last_reported"] + INGEST_PROGRESS_STEP:
                     state["last_reported"] = percent
                     slide.ingest_progress = percent
-                    slides.save(slide)
+                    try:
+                        slides.save(slide)
+                    except SLIDE_DELETED_ERRORS:
+                        # Stop downloading a file nobody needs any more (the transfer re-raises it).
+                        slides.rollback()
+                        raise SlideDeletedError from None
 
         return on_progress

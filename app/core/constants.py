@@ -6,6 +6,7 @@ REFRESH_TOKEN_COOKIE = "refresh_token"
 CONTENT_DISPOSITION_ATTACHMENT = 'attachment; filename="{filename}"'
 
 MEDIA_TYPE_XML = "application/xml"
+MEDIA_TYPE_JSON = "application/json"
 MEDIA_TYPE_GEOJSON = "application/geo+json"
 
 # Shared with the SQLAlchemy columns that store these values, so the two can't silently drift apart.

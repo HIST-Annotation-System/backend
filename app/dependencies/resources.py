@@ -8,12 +8,13 @@ from sqlalchemy import Engine, create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.config import Settings
+from app.services.slide_files import SlideDownloadLocks
 from app.services.slides import SlideHandleCache
 from app.services.storage import ObjectStorage, ObjectStorageService
 
-# One worker: ingestion is I/O- and CPU-heavy per slide, and running it off the request threadpool
-# is what matters here, not parallelizing across slides.
-INGEST_POOL_WORKERS = 1
+# Ingestion is mostly a download plus a short analysis, so two slides uploaded one after another
+# don't have to wait for each other; more would compete with tile serving for CPU and disk.
+INGEST_POOL_WORKERS = 2
 INGEST_POOL_THREAD_NAME_PREFIX = "ingest"
 
 
@@ -26,6 +27,7 @@ class AppResources:
     session_factory: sessionmaker[Session]
     storage: ObjectStorage
     slide_handles: SlideHandleCache
+    slide_download_locks: SlideDownloadLocks
     # Slide ingestion runs here, not on the request threadpool that also serves Deep Zoom tiles.
     ingest_pool: ThreadPoolExecutor
 
@@ -46,6 +48,7 @@ def build_resources(settings: Settings) -> AppResources:
         session_factory=sessionmaker(bind=engine, expire_on_commit=False),
         storage=storage,
         slide_handles=SlideHandleCache(),
+        slide_download_locks=SlideDownloadLocks(),
         ingest_pool=ThreadPoolExecutor(max_workers=INGEST_POOL_WORKERS, thread_name_prefix=INGEST_POOL_THREAD_NAME_PREFIX),
     )
 

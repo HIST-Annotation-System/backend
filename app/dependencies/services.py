@@ -13,10 +13,11 @@ from app.services.slide_files import SlideFileService
 from app.services.slide_ingest import SlideIngestService
 from app.services.slide_upload import SlideUploadService
 from app.services.slides import SlideService
+from app.services.storage_browser import StorageBrowserService
 
 
 def _slide_files(resources: AppResources) -> SlideFileService:
-    return SlideFileService(resources.storage, resources.settings.SLIDE_CACHE_DIR)
+    return SlideFileService(resources.storage, resources.settings.SLIDE_CACHE_DIR, resources.slide_download_locks)
 
 
 def get_slide_service(session: SessionDep, resources: ResourcesDep) -> SlideService:
@@ -48,9 +49,14 @@ def get_hotspot_annotation_service(session: SessionDep) -> HotspotAnnotationServ
     return HotspotAnnotationService(HotspotRepository(session), AnnotationRepository(session))
 
 
+def get_storage_browser_service(resources: ResourcesDep) -> StorageBrowserService:
+    return StorageBrowserService(resources.storage)
+
+
 SlideServiceDep = Annotated[SlideService, Depends(get_slide_service)]
 SlideUploadServiceDep = Annotated[SlideUploadService, Depends(get_slide_upload_service)]
 SlideIngestServiceDep = Annotated[SlideIngestService, Depends(get_slide_ingest_service)]
 AnnotationServiceDep = Annotated[AnnotationService, Depends(get_annotation_service)]
 HotspotServiceDep = Annotated[HotspotService, Depends(get_hotspot_service)]
 HotspotAnnotationServiceDep = Annotated[HotspotAnnotationService, Depends(get_hotspot_annotation_service)]
+StorageBrowserServiceDep = Annotated[StorageBrowserService, Depends(get_storage_browser_service)]
