@@ -6,9 +6,11 @@ from typing import Annotated, Self
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
 from app.core.constants import NAME_MAX_LENGTH, NAME_MIN_LENGTH
-from app.models.hotspot import HotspotFeature, HotspotImageType
+from app.models.hotspot import HotspotBatchStatus, HotspotFeature, HotspotImageType
 
 HOTSPOT_UPDATE_EMPTY = "Provide name and/or folder_id."
+DUPLICATE_BOXES = "Each box may be listed only once."
+HOTSPOT_BATCH_MAX_BOXES = 100
 
 Name = Annotated[str, StringConstraints(strip_whitespace=True, min_length=NAME_MIN_LENGTH, max_length=NAME_MAX_LENGTH)]
 
@@ -41,15 +43,38 @@ class HotspotFolderRead(BaseModel):
     created_at: datetime
 
 
-class HotspotCreate(BaseModel):
-    """A square of a slide to capture, in level-0 slide pixels."""
+BoxCorner = tuple[Annotated[int, Field(ge=0)], Annotated[int, Field(ge=0)]]
 
+
+class HotspotBatchCreate(BaseModel):
+    """Fixed-size slide squares to cut out into hotspots, each named `{name_prefix} ({x}, {y})`."""
+
+    # Chosen by the client, so a retried request does not start the batch twice.
+    id: uuid.UUID
     slide_id: uuid.UUID
     folder_id: uuid.UUID
-    name: Name
-    x: int = Field(ge=0)
-    y: int = Field(ge=0)
-    size: int = Field(gt=0)
+    name_prefix: Name
+    # Level-0 [x, y] top-left corner of each box to cut out (laid out on a grid or painted freely).
+    boxes: list[BoxCorner] = Field(min_length=1, max_length=HOTSPOT_BATCH_MAX_BOXES)
+
+    @model_validator(mode="after")
+    def _require_unique_boxes(self) -> Self:
+        if len(set(self.boxes)) != len(self.boxes):
+            raise ValueError(DUPLICATE_BOXES)
+        return self
+
+
+class HotspotBatchRead(BaseModel):
+    id: uuid.UUID
+    slide_id: uuid.UUID
+    slide_name: str
+    folder_id: uuid.UUID
+    folder_name: str
+    total: int
+    done: int
+    status: HotspotBatchStatus
+    error_message: str | None
+    created_at: datetime
 
 
 class HotspotUpdate(BaseModel):

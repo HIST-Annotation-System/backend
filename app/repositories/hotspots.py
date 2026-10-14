@@ -1,14 +1,15 @@
 import uuid
 from collections.abc import Sequence
+from datetime import datetime
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from app.models.hotspot import Hotspot, HotspotAnnotation, HotspotFolder
+from app.models.hotspot import Hotspot, HotspotAnnotation, HotspotBatch, HotspotBatchStatus, HotspotFolder
 
 
 class HotspotRepository:
-    """Hotspot folders, hotspots and hotspot annotations."""
+    """Hotspot folders, hotspots, hotspot annotations and hotspot batches."""
 
     def __init__(self, session: Session) -> None:
         self._session = session
@@ -35,11 +36,38 @@ class HotspotRepository:
     def get(self, hotspot_id: uuid.UUID) -> Hotspot | None:
         return self._session.get(Hotspot, hotspot_id)
 
-    def list_hotspots(self, folder_id: uuid.UUID | None = None) -> Sequence[Hotspot]:
+    def list_hotspots(
+        self, folder_id: uuid.UUID | None = None, slide_id: uuid.UUID | None = None
+    ) -> Sequence[Hotspot]:
         statement = select(Hotspot).order_by(Hotspot.created_at.desc())
         if folder_id is not None:
             statement = statement.where(Hotspot.folder_id == folder_id)
+        if slide_id is not None:
+            statement = statement.where(Hotspot.slide_id == slide_id)
         return self._session.scalars(statement).all()
+
+    def get_batch(self, batch_id: uuid.UUID) -> HotspotBatch | None:
+        return self._session.get(HotspotBatch, batch_id)
+
+    def list_batches(self, failed_since: datetime) -> Sequence[HotspotBatch]:
+        """Running batches, and those that failed after `failed_since`; newest first."""
+        return self._session.scalars(
+            select(HotspotBatch)
+            .where(
+                or_(
+                    HotspotBatch.status == HotspotBatchStatus.RUNNING,
+                    (HotspotBatch.status == HotspotBatchStatus.FAILED) & (HotspotBatch.created_at >= failed_since),
+                )
+            )
+            .order_by(HotspotBatch.created_at.desc())
+        ).all()
+
+    def list_running_batches(self, created_before: datetime) -> Sequence[HotspotBatch]:
+        return self._session.scalars(
+            select(HotspotBatch).where(
+                HotspotBatch.status == HotspotBatchStatus.RUNNING, HotspotBatch.created_at < created_before
+            )
+        ).all()
 
     def get_annotation(self, annotation_id: uuid.UUID) -> HotspotAnnotation | None:
         return self._session.get(HotspotAnnotation, annotation_id)
@@ -51,7 +79,7 @@ class HotspotRepository:
             .order_by(HotspotAnnotation.created_at)
         ).all()
 
-    def save[T: HotspotFolder | Hotspot | HotspotAnnotation](self, entity: T) -> T:
+    def save[T: HotspotFolder | Hotspot | HotspotAnnotation | HotspotBatch](self, entity: T) -> T:
         self._session.add(entity)
         try:
             self._session.commit()
@@ -61,8 +89,8 @@ class HotspotRepository:
             raise
         return entity
 
-    def save_all(self, hotspots: Sequence[Hotspot]) -> None:
-        self._session.add_all(hotspots)
+    def save_all(self, entities: Sequence[Hotspot | HotspotBatch]) -> None:
+        self._session.add_all(entities)
         self._session.commit()
 
     def delete(self, entity: HotspotFolder | Hotspot | HotspotAnnotation) -> None:
