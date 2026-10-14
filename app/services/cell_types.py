@@ -16,6 +16,8 @@ class CellTypeService:
     def list_cell_types(self) -> list[CellTypeRead]:
         return [CellTypeRead.model_validate(ct) for ct in self._cell_types.list_all()]
 
+    list_all = list_cell_types
+
     def get_cell_type(self, cell_type_id: int) -> CellTypeRead:
         return CellTypeRead.model_validate(self._require(cell_type_id))
 
