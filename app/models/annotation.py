@@ -1,24 +1,14 @@
 import uuid
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import DateTime, ForeignKey, String, func
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy import DateTime, ForeignKey, func
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, JsonType
 
-ANNOTATION_CLASS_NAME_MAX_LENGTH = 128
-# "#RRGGBB"
-HEX_COLOR_LENGTH = 7
-
-
-class AnnotationClass(Base):
-    __tablename__ = "annotation_classes"
-
-    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
-    name: Mapped[str] = mapped_column(String(ANNOTATION_CLASS_NAME_MAX_LENGTH))
-    color: Mapped[str] = mapped_column(String(HEX_COLOR_LENGTH))
-    sort_order: Mapped[int] = mapped_column(default=0)
+if TYPE_CHECKING:
+    from app.models.cell_type import CellType
 
 
 class Annotation(Base):
@@ -26,7 +16,9 @@ class Annotation(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     slide_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("slides.id", ondelete="CASCADE"), index=True)
-    class_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("annotation_classes.id"))
+    cell_type_id: Mapped[int | None] = mapped_column(ForeignKey("cell_types.id", ondelete="RESTRICT"), index=True)
     # GeoJSON Polygon in level-0 slide pixels (closed exterior ring).
     geometry: Mapped[dict[str, Any]] = mapped_column(JsonType)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    cell_type: Mapped["CellType | None"] = relationship(back_populates="annotations")

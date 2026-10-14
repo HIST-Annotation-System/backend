@@ -1,17 +1,18 @@
 import uuid
 from collections.abc import Iterable
-from typing import Any, Protocol
+from typing import Any
 
 from pydantic import ValidationError
 
 from app.exceptions.errors import ConflictError, InvalidInputError, NotFoundError
-from app.models.annotation import Annotation, AnnotationClass
+from app.models.annotation import Annotation
+from app.models.cell_type import CellType
 from app.models.slide import Slide
 from app.repositories.annotations import AnnotationRepository
+from app.repositories.cell_types import CellTypeRepository
 from app.repositories.slides import SlideRepository
 from app.schemas.annotations import (
     AnnotationClassification,
-    AnnotationClassRead,
     AnnotationCreate,
     AnnotationFeature,
     AnnotationFeatureCollection,
@@ -24,12 +25,8 @@ from app.services.slides import require_slide
 
 ANNOTATION_NOT_FOUND = "Annotation {annotation_id} does not exist on this slide."
 ANNOTATION_ALREADY_EXISTS = "Annotation {annotation_id} already exists."
-ANNOTATION_CLASS_NOT_FOUND = "Annotation class {class_id} does not exist."
+CELL_TYPE_NOT_FOUND = "Cell type {cell_type_id} does not exist."
 POLYGON_OUTSIDE_IMAGE = "The polygon lies outside the image."
-
-
-def _hex_to_rgb(color: str) -> tuple[int, int, int]:
-    return int(color[1:3], 16), int(color[3:5], 16), int(color[5:7], 16)
 
 
 def fit_to_bounds(geometry: PolygonGeometry, width: float, height: float) -> dict[str, Any]:
@@ -45,43 +42,48 @@ def _fit_to_slide(geometry: PolygonGeometry, slide: Slide) -> dict[str, Any]:
     return fit_to_bounds(geometry, float(slide.width or 0), float(slide.height or 0))
 
 
-class ClassifiedPolygon(Protocol):
-    id: uuid.UUID
-    class_id: uuid.UUID
-    geometry: dict[str, Any]
-
-
 def build_feature_collection(
-    annotations: Iterable[ClassifiedPolygon], classes: Iterable[AnnotationClass]
+    annotations: Iterable[Annotation], cell_types: Iterable[CellType]
 ) -> AnnotationFeatureCollection:
     """QuPath-compatible GeoJSON of the given annotations (coordinates as stored)."""
-    by_id = {item.id: item for item in classes}
-    return AnnotationFeatureCollection(
-        features=[
+    by_id = {item.id: item for item in cell_types}
+    features = []
+    for annotation in annotations:
+        ct = by_id.get(annotation.cell_type_id) if annotation.cell_type_id is not None else None
+        name = ct.name if ct else "Unclassified"
+        # Deterministic RGB from cell_type_id
+        color = (
+            ((annotation.cell_type_id * 67) % 256, (annotation.cell_type_id * 131) % 256, (annotation.cell_type_id * 197) % 256)
+            if annotation.cell_type_id is not None
+            else (128, 128, 128)
+        )
+        features.append(
             AnnotationFeature(
                 id=annotation.id,
                 geometry=PolygonGeometry.model_validate(annotation.geometry),
                 properties=AnnotationFeatureProperties(
                     classification=AnnotationClassification(
-                        name=by_id[annotation.class_id].name,
-                        color=_hex_to_rgb(by_id[annotation.class_id].color),
+                        name=name,
+                        color=color,
                     )
                 ),
             )
-            for annotation in annotations
-        ]
-    )
+        )
+    return AnnotationFeatureCollection(features=features)
 
 
 class AnnotationService:
-    """Tissue classes and the polygon annotations of a slide (always the slide in the request path)."""
+    """Polygon annotations of a slide (always the slide in the request path)."""
 
-    def __init__(self, annotations: AnnotationRepository, slides: SlideRepository) -> None:
+    def __init__(
+        self,
+        annotations: AnnotationRepository,
+        slides: SlideRepository,
+        cell_types: CellTypeRepository,
+    ) -> None:
         self._annotations = annotations
         self._slides = slides
-
-    def list_classes(self) -> list[AnnotationClassRead]:
-        return [AnnotationClassRead.model_validate(item) for item in self._annotations.list_classes()]
+        self._cell_types = cell_types
 
     def list_annotations(self, slide_id: uuid.UUID) -> list[AnnotationRead]:
         require_slide(self._slides, slide_id)
@@ -89,12 +91,16 @@ class AnnotationService:
 
     def create_annotation(self, slide_id: uuid.UUID, data: AnnotationCreate) -> AnnotationRead:
         slide = require_slide(self._slides, slide_id, ready=True)
-        self._require_class(data.class_id)
+        assert data.cell_type_id is not None
+        self._require_cell_type(data.cell_type_id)
         annotation_id = data.id or uuid.uuid4()
         if self._annotations.get(annotation_id) is not None:
             raise ConflictError(ANNOTATION_ALREADY_EXISTS.format(annotation_id=annotation_id))
         annotation = Annotation(
-            id=annotation_id, slide_id=slide_id, class_id=data.class_id, geometry=_fit_to_slide(data.geometry, slide)
+            id=annotation_id,
+            slide_id=slide_id,
+            cell_type_id=data.cell_type_id,
+            geometry=_fit_to_slide(data.geometry, slide),
         )
         return AnnotationRead.model_validate(self._annotations.save(annotation))
 
@@ -103,9 +109,9 @@ class AnnotationService:
     ) -> AnnotationRead:
         slide = require_slide(self._slides, slide_id, ready=True)
         annotation = self._require_annotation(slide_id, annotation_id)
-        if data.class_id is not None:
-            self._require_class(data.class_id)
-            annotation.class_id = data.class_id
+        if data.cell_type_id is not None:
+            self._require_cell_type(data.cell_type_id)
+            annotation.cell_type_id = data.cell_type_id
         if data.geometry is not None:
             annotation.geometry = _fit_to_slide(data.geometry, slide)
         return AnnotationRead.model_validate(self._annotations.save(annotation))
@@ -115,11 +121,14 @@ class AnnotationService:
 
     def export_geojson(self, slide_id: uuid.UUID) -> AnnotationFeatureCollection:
         require_slide(self._slides, slide_id)
-        return build_feature_collection(self._annotations.list_for_slide(slide_id), self._annotations.list_classes())
+        return build_feature_collection(
+            self._annotations.list_for_slide(slide_id),
+            self._cell_types.list_all(),
+        )
 
-    def _require_class(self, class_id: uuid.UUID) -> None:
-        if self._annotations.get_class(class_id) is None:
-            raise InvalidInputError(ANNOTATION_CLASS_NOT_FOUND.format(class_id=class_id))
+    def _require_cell_type(self, cell_type_id: int) -> None:
+        if self._cell_types.get(cell_type_id) is None:
+            raise InvalidInputError(CELL_TYPE_NOT_FOUND.format(cell_type_id=cell_type_id))
 
     def _require_annotation(self, slide_id: uuid.UUID, annotation_id: uuid.UUID) -> Annotation:
         annotation = self._annotations.get(annotation_id)

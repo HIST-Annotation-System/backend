@@ -4,9 +4,11 @@ from fastapi import Depends
 
 from app.dependencies.resources import AppResources, ResourcesDep, SessionDep
 from app.repositories.annotations import AnnotationRepository
+from app.repositories.cell_types import CellTypeRepository
 from app.repositories.hotspots import HotspotRepository
 from app.repositories.slides import SlideRepository
 from app.services.annotations import AnnotationService
+from app.services.cell_types import CellTypeService
 from app.services.hotspot_annotations import HotspotAnnotationService
 from app.services.hotspots import HotspotService
 from app.services.slide_files import SlideFileService
@@ -33,7 +35,11 @@ def get_slide_ingest_service(resources: ResourcesDep) -> SlideIngestService:
 
 
 def get_annotation_service(session: SessionDep) -> AnnotationService:
-    return AnnotationService(AnnotationRepository(session), SlideRepository(session))
+    return AnnotationService(AnnotationRepository(session), SlideRepository(session), CellTypeRepository(session))
+
+
+def get_cell_type_service(session: SessionDep) -> CellTypeService:
+    return CellTypeService(CellTypeRepository(session))
 
 
 def get_hotspot_service(session: SessionDep, resources: ResourcesDep) -> HotspotService:
@@ -46,7 +52,7 @@ def get_hotspot_service(session: SessionDep, resources: ResourcesDep) -> Hotspot
 
 
 def get_hotspot_annotation_service(session: SessionDep) -> HotspotAnnotationService:
-    return HotspotAnnotationService(HotspotRepository(session), AnnotationRepository(session))
+    return HotspotAnnotationService(HotspotRepository(session), CellTypeRepository(session))
 
 
 def get_storage_browser_service(resources: ResourcesDep) -> StorageBrowserService:
@@ -57,6 +63,7 @@ SlideServiceDep = Annotated[SlideService, Depends(get_slide_service)]
 SlideUploadServiceDep = Annotated[SlideUploadService, Depends(get_slide_upload_service)]
 SlideIngestServiceDep = Annotated[SlideIngestService, Depends(get_slide_ingest_service)]
 AnnotationServiceDep = Annotated[AnnotationService, Depends(get_annotation_service)]
+CellTypeServiceDep = Annotated[CellTypeService, Depends(get_cell_type_service)]
 HotspotServiceDep = Annotated[HotspotService, Depends(get_hotspot_service)]
 HotspotAnnotationServiceDep = Annotated[HotspotAnnotationService, Depends(get_hotspot_annotation_service)]
 StorageBrowserServiceDep = Annotated[StorageBrowserService, Depends(get_storage_browser_service)]

@@ -4,7 +4,7 @@ from collections.abc import Sequence
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models.annotation import Annotation, AnnotationClass
+from app.models.annotation import Annotation
 
 
 class AnnotationRepository:
@@ -27,9 +27,3 @@ class AnnotationRepository:
     def delete(self, annotation: Annotation) -> None:
         self._session.delete(annotation)
         self._session.commit()
-
-    def get_class(self, class_id: uuid.UUID) -> AnnotationClass | None:
-        return self._session.get(AnnotationClass, class_id)
-
-    def list_classes(self) -> Sequence[AnnotationClass]:
-        return self._session.scalars(select(AnnotationClass).order_by(AnnotationClass.sort_order)).all()
