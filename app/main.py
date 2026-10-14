@@ -9,8 +9,9 @@ from app.core.logging import configure_logging
 from app.dependencies.resources import build_resources
 from app.exceptions.errors import register_exception_handlers
 from app.middleware.request_logging import RequestLoggingMiddleware
+from app.services.hotspots import fail_interrupted_batches
 from app.services.slide_ingest import fail_interrupted_ingests
-from app.routers import annotations, auth, categories, cell_types, groups, hotspots, slides, storage, upload, users
+from app.routers import auth, categories, cell_types, groups, hotspots, slides, storage, upload, users
 
 configure_logging(settings.LOG_LEVEL)
 
@@ -20,6 +21,7 @@ def create_app() -> FastAPI:
         # Infrastructure only: no slide is opened or selected at startup.
         resources = build_resources(settings)
         fail_interrupted_ingests(resources.session_factory)
+        fail_interrupted_batches(resources.session_factory)
         app.state.resources = resources
         try:
             yield
@@ -52,7 +54,6 @@ def create_app() -> FastAPI:
     app.include_router(upload.router, prefix=f"{settings.API_V1_STR}/upload", tags=["Upload"])
     app.include_router(slides.router, prefix=f"{settings.API_V1_STR}/slides", tags=["Slides"])
     app.include_router(storage.router, prefix=f"{settings.API_V1_STR}/storage", tags=["Storage"])
-    app.include_router(annotations.router, prefix=settings.API_V1_STR, tags=["Annotations"])
     app.include_router(cell_types.router, prefix=f"{settings.API_V1_STR}/cell-types", tags=["Cell Types"])
     app.include_router(hotspots.router, prefix=settings.API_V1_STR, tags=["Hotspots"])
 

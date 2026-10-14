@@ -16,6 +16,9 @@ from app.services.storage import ObjectStorage, ObjectStorageService
 # don't have to wait for each other; more would compete with tile serving for CPU and disk.
 INGEST_POOL_WORKERS = 2
 INGEST_POOL_THREAD_NAME_PREFIX = "ingest"
+# Hotspot batches are cut out one at a time, so they never compete with ingestion or with each other.
+HOTSPOT_POOL_WORKERS = 1
+HOTSPOT_POOL_THREAD_NAME_PREFIX = "hotspots"
 
 
 @dataclass(frozen=True)
@@ -30,9 +33,11 @@ class AppResources:
     slide_download_locks: SlideDownloadLocks
     # Slide ingestion runs here, not on the request threadpool that also serves Deep Zoom tiles.
     ingest_pool: ThreadPoolExecutor
+    hotspot_pool: ThreadPoolExecutor
 
     def close(self) -> None:
         self.ingest_pool.shutdown(wait=False, cancel_futures=True)
+        self.hotspot_pool.shutdown(wait=False, cancel_futures=True)
         self.engine.dispose()
 
 
@@ -50,6 +55,9 @@ def build_resources(settings: Settings) -> AppResources:
         slide_handles=SlideHandleCache(),
         slide_download_locks=SlideDownloadLocks(),
         ingest_pool=ThreadPoolExecutor(max_workers=INGEST_POOL_WORKERS, thread_name_prefix=INGEST_POOL_THREAD_NAME_PREFIX),
+        hotspot_pool=ThreadPoolExecutor(
+            max_workers=HOTSPOT_POOL_WORKERS, thread_name_prefix=HOTSPOT_POOL_THREAD_NAME_PREFIX
+        ),
     )
 
 

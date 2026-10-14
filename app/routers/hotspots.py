@@ -4,10 +4,12 @@ from fastapi import APIRouter, Response, UploadFile, status
 from fastapi.responses import JSONResponse
 
 from app.core.constants import CONTENT_DISPOSITION_ATTACHMENT, MEDIA_TYPE_GEOJSON
-from app.dependencies.services import HotspotAnnotationServiceDep, HotspotServiceDep
+from app.dependencies.resources import ResourcesDep
+from app.dependencies.services import HotspotAnnotationServiceDep, HotspotServiceDep, run_hotspot_batch
 from app.schemas.annotations import AnnotationCreate, AnnotationRead, AnnotationUpdate
 from app.schemas.hotspots import (
-    HotspotCreate,
+    HotspotBatchCreate,
+    HotspotBatchRead,
     HotspotFolderRead,
     HotspotFolderWrite,
     HotspotRead,
@@ -59,15 +61,32 @@ def upload_hotspot_image(folder_id: uuid.UUID, file: UploadFile, service: Hotspo
 def list_hotspots(
     service: HotspotServiceDep,
     folder_id: uuid.UUID | None = None,
+    slide_id: uuid.UUID | None = None,
     sort: HotspotSort = HotspotSort.CREATED_AT,
     order: SortOrder = SortOrder.DESC,
 ) -> list[HotspotRead]:
-    return service.list_hotspots(folder_id, sort, order)
+    return service.list_hotspots(folder_id, sort, order, slide_id)
 
 
-@router.post("/hotspots", response_model=HotspotRead, status_code=status.HTTP_201_CREATED)
-def create_hotspot(data: HotspotCreate, service: HotspotServiceDep) -> HotspotRead:
-    return service.create_hotspot(data)
+@router.post("/hotspot-batches", response_model=HotspotBatchRead, status_code=status.HTTP_202_ACCEPTED)
+def create_hotspot_batch(
+    data: HotspotBatchCreate, service: HotspotServiceDep, resources: ResourcesDep
+) -> HotspotBatchRead:
+    """Start cutting slide squares out into hotspots; a retry with the same id returns that batch."""
+    batch, created = service.create_batch(data)
+    if created:
+        resources.hotspot_pool.submit(run_hotspot_batch, resources, batch.id)
+    return batch
+
+
+@router.get("/hotspot-batches", response_model=list[HotspotBatchRead])
+def list_hotspot_batches(service: HotspotServiceDep) -> list[HotspotBatchRead]:
+    return service.list_batches()
+
+
+@router.get("/hotspot-batches/{batch_id}", response_model=HotspotBatchRead)
+def get_hotspot_batch(batch_id: uuid.UUID, service: HotspotServiceDep) -> HotspotBatchRead:
+    return service.get_batch(batch_id)
 
 
 @router.get("/hotspots/{hotspot_id}", response_model=HotspotRead)

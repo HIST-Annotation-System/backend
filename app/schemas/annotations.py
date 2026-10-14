@@ -89,14 +89,6 @@ class AnnotationRead(BaseModel):
         return str(self.cell_type_id) if self.cell_type_id is not None else None
 
 
-class AnnotationClassRead(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: str
-    name: str
-    color: str
-
-
 class AnnotationClassification(BaseModel):
     name: str
     color: tuple[int, int, int]

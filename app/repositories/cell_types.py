@@ -3,7 +3,6 @@ from collections.abc import Sequence
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models.annotation import Annotation
 from app.models.cell_type import CellType
 from app.models.hotspot import HotspotAnnotation
 
@@ -37,19 +36,10 @@ class CellTypeRepository:
         self._session.flush()
 
     def is_linked_to_annotations(self, cell_type_id: int) -> bool:
-        """Return True if any slide or hotspot annotation references this cell type."""
-        has_slide_annotations = (
-            self._session.scalars(
-                select(Annotation.id).where(Annotation.cell_type_id == cell_type_id).limit(1)
-            ).first()
-            is not None
-        )
-        if has_slide_annotations:
-            return True
-        has_hotspot_annotations = (
+        """Return True if any hotspot annotation references this cell type."""
+        return (
             self._session.scalars(
                 select(HotspotAnnotation.id).where(HotspotAnnotation.cell_type_id == cell_type_id).limit(1)
             ).first()
             is not None
         )
-        return has_hotspot_annotations

@@ -1,10 +1,9 @@
 from app.models.account import Account, RefreshToken, Role
-from app.models.annotation import Annotation
 from app.models.base import Base
 from app.models.category import Category
 from app.models.cell_type import CellType
 from app.models.group import AnnotationGroup
-from app.models.hotspot import Hotspot, HotspotAnnotation, HotspotFolder
+from app.models.hotspot import Hotspot, HotspotAnnotation, HotspotBatch, HotspotFolder
 from app.models.profile import AnnotatorProfile
 from app.models.slide import Slide, SlideStatus
 
@@ -12,7 +11,6 @@ __all__ = [
     "Base",
     "Slide",
     "SlideStatus",
-    "Annotation",
     "Account",
     "Role",
     "RefreshToken",
@@ -23,4 +21,5 @@ __all__ = [
     "HotspotFolder",
     "Hotspot",
     "HotspotAnnotation",
+    "HotspotBatch",
 ]

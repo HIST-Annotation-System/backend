@@ -3,7 +3,7 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import DateTime, Enum, ForeignKey, String, func
+from sqlalchemy import DateTime, Enum, ForeignKey, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 if TYPE_CHECKING:
@@ -92,3 +92,47 @@ class HotspotAnnotation(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     cell_type: Mapped["CellType | None"] = relationship(back_populates="hotspot_annotations")
+
+
+class HotspotBatchStatus(enum.StrEnum):
+    RUNNING = "running"
+    DONE = "done"
+    FAILED = "failed"
+
+
+# Must stay >= the longest HotspotBatchStatus value.
+HOTSPOT_BATCH_STATUS_MAX_LENGTH = 16
+
+
+class HotspotBatch(Base):
+    """Fixed-size squares of a slide being cut out into hotspots in the background.
+
+    The id comes from the client, so a retried request finds the batch it already started.
+    """
+
+    __tablename__ = "hotspot_batches"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True)
+    slide_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("slides.id", ondelete="CASCADE"), index=True)
+    slide_name: Mapped[str] = mapped_column(String(NAME_MAX_LENGTH))
+    folder_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("hotspot_folders.id", ondelete="CASCADE"), index=True)
+    name_prefix: Mapped[str] = mapped_column(String(NAME_MAX_LENGTH))
+    # Level-0 [x, y] top-left corner of each box to cut out, in order.
+    boxes: Mapped[list[list[int]]] = mapped_column(JsonType)
+    done: Mapped[int] = mapped_column(default=0)
+    status: Mapped[HotspotBatchStatus] = mapped_column(
+        Enum(
+            HotspotBatchStatus,
+            name="hotspot_batch_status",
+            native_enum=False,
+            create_constraint=True,
+            length=HOTSPOT_BATCH_STATUS_MAX_LENGTH,
+            values_callable=lambda statuses: [item.value for item in statuses],
+        ),
+        default=HotspotBatchStatus.RUNNING,
+        index=True,
+    )
+    error_message: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    folder: Mapped[HotspotFolder] = relationship(lazy="joined")
