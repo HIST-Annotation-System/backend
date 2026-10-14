@@ -16,7 +16,7 @@ router = APIRouter()
 def list_annotation_classes(cell_types: CellTypeServiceDep) -> list[AnnotationClassRead]:
     return [
         AnnotationClassRead(id=str(item.id), name=item.name, color="#3b82f6")
-        for item in cell_types.list_all()
+        for item in cell_types.list_cell_types()
     ]
 
 
