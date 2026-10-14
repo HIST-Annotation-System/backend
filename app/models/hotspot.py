@@ -1,10 +1,13 @@
 import enum
 import uuid
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import DateTime, Enum, ForeignKey, String, func
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+if TYPE_CHECKING:
+    from app.models.cell_type import CellType
 
 from app.core.constants import NAME_MAX_LENGTH
 from app.models.base import Base, JsonType
@@ -83,7 +86,9 @@ class HotspotAnnotation(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     hotspot_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("hotspots.id", ondelete="CASCADE"), index=True)
-    class_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("annotation_classes.id"))
+    cell_type_id: Mapped[int | None] = mapped_column(ForeignKey("cell_types.id", ondelete="RESTRICT"), index=True)
     # GeoJSON Polygon in hotspot image pixels (closed exterior ring).
     geometry: Mapped[dict[str, Any]] = mapped_column(JsonType)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    cell_type: Mapped["CellType | None"] = relationship(back_populates="hotspot_annotations")

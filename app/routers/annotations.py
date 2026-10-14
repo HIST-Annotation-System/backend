@@ -4,7 +4,7 @@ from fastapi import APIRouter, status
 from fastapi.responses import JSONResponse
 
 from app.core.constants import CONTENT_DISPOSITION_ATTACHMENT, MEDIA_TYPE_GEOJSON
-from app.dependencies.services import AnnotationServiceDep
+from app.dependencies.services import AnnotationServiceDep, CellTypeServiceDep
 from app.schemas.annotations import AnnotationClassRead, AnnotationCreate, AnnotationRead, AnnotationUpdate
 
 ANNOTATIONS_EXPORT_FILENAME = "annotations_{slide_id}.geojson"
@@ -13,8 +13,11 @@ router = APIRouter()
 
 
 @router.get("/annotation-classes", response_model=list[AnnotationClassRead])
-def list_annotation_classes(service: AnnotationServiceDep) -> list[AnnotationClassRead]:
-    return service.list_classes()
+def list_annotation_classes(cell_types: CellTypeServiceDep) -> list[AnnotationClassRead]:
+    return [
+        AnnotationClassRead(id=str(item.id), name=item.name, color="#3b82f6")
+        for item in cell_types.list_all()
+    ]
 
 
 @router.get("/slides/{slide_id}/annotations", response_model=list[AnnotationRead])

@@ -3,14 +3,14 @@ import uuid
 from datetime import datetime
 from typing import Literal, Self
 
-from pydantic import BaseModel, ConfigDict, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, computed_field, field_validator, model_validator
 
 ANNOTATION_MAX_VERTICES = 10_000
 POLYGON_SINGLE_RING = "A polygon must have exactly one exterior ring (holes are not supported)."
 POLYGON_NOT_FINITE = "Coordinates must be finite numbers."
 POLYGON_TOO_FEW_VERTICES = "A polygon needs at least 3 distinct vertices."
 POLYGON_TOO_MANY_VERTICES = f"A polygon may have at most {ANNOTATION_MAX_VERTICES} vertices."
-ANNOTATION_UPDATE_EMPTY = "Provide class_id and/or geometry."
+ANNOTATION_UPDATE_EMPTY = "Provide cell_type_id and/or geometry."
 
 Position = tuple[float, float]
 
@@ -42,17 +42,35 @@ class PolygonGeometry(BaseModel):
 class AnnotationCreate(BaseModel):
     # The annotator's own UUID (keeps its undo/redo history consistent); generated when omitted.
     id: uuid.UUID | None = None
-    class_id: uuid.UUID
+    cell_type_id: int | None = None
+    class_id: int | str | None = None
     geometry: PolygonGeometry
+
+    @model_validator(mode="after")
+    def _resolve_cell_type(self) -> Self:
+        if self.cell_type_id is None and self.class_id is not None:
+            try:
+                self.cell_type_id = int(self.class_id)
+            except ValueError:
+                raise ValueError("class_id must be convertible to int")
+        if self.cell_type_id is None:
+            raise ValueError("cell_type_id is required")
+        return self
 
 
 class AnnotationUpdate(BaseModel):
-    class_id: uuid.UUID | None = None
+    cell_type_id: int | None = None
+    class_id: int | str | None = None
     geometry: PolygonGeometry | None = None
 
     @model_validator(mode="after")
     def _require_change(self) -> Self:
-        if self.class_id is None and self.geometry is None:
+        if self.cell_type_id is None and self.class_id is not None:
+            try:
+                self.cell_type_id = int(self.class_id)
+            except ValueError:
+                raise ValueError("class_id must be convertible to int")
+        if self.cell_type_id is None and self.geometry is None:
             raise ValueError(ANNOTATION_UPDATE_EMPTY)
         return self
 
@@ -61,15 +79,20 @@ class AnnotationRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
-    class_id: uuid.UUID
+    cell_type_id: int | None
     geometry: PolygonGeometry
     created_at: datetime
+
+    @computed_field
+    @property
+    def class_id(self) -> str | None:
+        return str(self.cell_type_id) if self.cell_type_id is not None else None
 
 
 class AnnotationClassRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
-    id: uuid.UUID
+    id: str
     name: str
     color: str
 
