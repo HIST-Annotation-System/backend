@@ -4,6 +4,8 @@ from sqlalchemy.orm import DeclarativeBase
 
 # JSONB on PostgreSQL, plain JSON elsewhere (SQLite in tests).
 JsonType = JSON().with_variant(JSONB(), "postgresql")
+# The same, but Python None is stored as SQL NULL rather than JSON 'null'.
+NullableJsonType = JSON(none_as_null=True).with_variant(JSONB(none_as_null=True), "postgresql")
 
 
 class Base(DeclarativeBase):

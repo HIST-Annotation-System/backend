@@ -10,7 +10,13 @@ POLYGON_SINGLE_RING = "A polygon must have exactly one exterior ring (holes are 
 POLYGON_NOT_FINITE = "Coordinates must be finite numbers."
 POLYGON_TOO_FEW_VERTICES = "A polygon needs at least 3 distinct vertices."
 POLYGON_TOO_MANY_VERTICES = f"A polygon may have at most {ANNOTATION_MAX_VERTICES} vertices."
-ANNOTATION_UPDATE_EMPTY = "Provide cell_type_id and/or geometry."
+ANNOTATION_UPDATE_EMPTY = "Provide cell_type_id, geometry and/or curve."
+CURVE_MIN_POINTS = 3
+# Polygon vertices per curved segment of a flattened curve; must match the frontend.
+CURVE_SEGMENT_STEPS = 16
+CURVE_TOO_FEW_POINTS = f"A curve needs at least {CURVE_MIN_POINTS} points."
+CURVE_TOO_MANY_VERTICES = f"A curve may flatten to at most {ANNOTATION_MAX_VERTICES} polygon vertices."
+CURVE_NOT_FINITE = "Curve coordinates must be finite numbers."
 
 Position = tuple[float, float]
 
@@ -39,12 +45,57 @@ class PolygonGeometry(BaseModel):
         return [ring]
 
 
+class CurvePoint(BaseModel):
+    """A corner, or a smooth point with two cubic Bézier handles."""
+
+    type: Literal["corner", "curve"]
+    point: Position
+    in_handle: Position | None = None
+    out_handle: Position | None = None
+    locked: bool = False
+
+    @field_validator("point", "in_handle", "out_handle")
+    @classmethod
+    def _require_finite(cls, position: Position | None) -> Position | None:
+        if position is not None and not all(math.isfinite(value) for value in position):
+            raise ValueError(CURVE_NOT_FINITE)
+        return position
+
+    @model_validator(mode="after")
+    def _drop_corner_handles(self) -> Self:
+        if self.type == "corner":
+            self.in_handle = None
+            self.out_handle = None
+        return self
+
+
+class CurveGeometry(BaseModel):
+    """Closed Bézier path in the same pixels as the polygon, which is derived from it."""
+
+    points: list[CurvePoint]
+
+    @field_validator("points")
+    @classmethod
+    def _check_point_count(cls, points: list[CurvePoint]) -> list[CurvePoint]:
+        if len(points) < CURVE_MIN_POINTS:
+            raise ValueError(CURVE_TOO_FEW_POINTS)
+        curved_segments = sum(
+            1
+            for index, point in enumerate(points)
+            if point.type == "curve" or points[(index + 1) % len(points)].type == "curve"
+        )
+        if len(points) + (CURVE_SEGMENT_STEPS - 1) * curved_segments > ANNOTATION_MAX_VERTICES:
+            raise ValueError(CURVE_TOO_MANY_VERTICES)
+        return points
+
+
 class AnnotationCreate(BaseModel):
     # The annotator's own UUID (keeps its undo/redo history consistent); generated when omitted.
     id: uuid.UUID | None = None
     cell_type_id: int | None = None
     class_id: int | str | None = None
     geometry: PolygonGeometry
+    curve: CurveGeometry | None = None
 
     @model_validator(mode="after")
     def _resolve_cell_type(self) -> Self:
@@ -62,6 +113,7 @@ class AnnotationUpdate(BaseModel):
     cell_type_id: int | None = None
     class_id: int | str | None = None
     geometry: PolygonGeometry | None = None
+    curve: CurveGeometry | None = None
 
     @model_validator(mode="after")
     def _require_change(self) -> Self:
@@ -70,7 +122,7 @@ class AnnotationUpdate(BaseModel):
                 self.cell_type_id = int(self.class_id)
             except ValueError:
                 raise ValueError("class_id must be convertible to int")
-        if self.cell_type_id is None and self.geometry is None:
+        if self.cell_type_id is None and self.geometry is None and "curve" not in self.model_fields_set:
             raise ValueError(ANNOTATION_UPDATE_EMPTY)
         return self
 
@@ -81,6 +133,7 @@ class AnnotationRead(BaseModel):
     id: uuid.UUID
     cell_type_id: int | None
     geometry: PolygonGeometry
+    curve: CurveGeometry | None = None
     created_at: datetime
 
     @computed_field

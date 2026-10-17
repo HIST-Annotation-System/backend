@@ -10,13 +10,14 @@ from app.schemas.annotations import (
     AnnotationFeatureCollection,
     AnnotationRead,
     AnnotationUpdate,
+    CurveGeometry,
     PolygonGeometry,
 )
 from app.services.annotations import (
     ANNOTATION_ALREADY_EXISTS,
     CELL_TYPE_NOT_FOUND,
     build_feature_collection,
-    fit_to_bounds,
+    fit_shape_to_bounds,
 )
 from app.services.hotspots import require_hotspot
 
@@ -24,7 +25,7 @@ HOTSPOT_ANNOTATION_NOT_FOUND = "Annotation {annotation_id} does not exist on thi
 
 
 class HotspotAnnotationService:
-    """Polygon annotations of a hotspot, in hotspot image pixels."""
+    """Polygon annotations of a hotspot, in hotspot image pixels, optionally drawn as Bézier curves."""
 
     def __init__(self, hotspots: HotspotRepository, cell_types: CellTypeRepository) -> None:
         self._hotspots = hotspots
@@ -41,11 +42,13 @@ class HotspotAnnotationService:
         annotation_id = data.id or uuid.uuid4()
         if self._hotspots.get_annotation(annotation_id) is not None:
             raise ConflictError(ANNOTATION_ALREADY_EXISTS.format(annotation_id=annotation_id))
+        geometry, curve = _fit(data.geometry, data.curve, hotspot)
         annotation = HotspotAnnotation(
             id=annotation_id,
             hotspot_id=hotspot_id,
             cell_type_id=data.cell_type_id,
-            geometry=_fit(data.geometry, hotspot),
+            geometry=geometry,
+            curve=curve,
         )
         return AnnotationRead.model_validate(self._hotspots.save(annotation))
 
@@ -57,8 +60,11 @@ class HotspotAnnotationService:
         if data.cell_type_id is not None:
             self._require_cell_type(data.cell_type_id)
             annotation.cell_type_id = data.cell_type_id
-        if data.geometry is not None:
-            annotation.geometry = _fit(data.geometry, hotspot)
+        if data.curve is not None or data.geometry is not None:
+            # New vertices without a curve leave no curve: a stored one would no longer match them.
+            annotation.geometry, annotation.curve = _fit(data.geometry, data.curve, hotspot)
+        elif "curve" in data.model_fields_set:
+            annotation.curve = None
         return AnnotationRead.model_validate(self._hotspots.save(annotation))
 
     def delete_annotation(self, hotspot_id: uuid.UUID, annotation_id: uuid.UUID) -> None:
@@ -82,6 +88,8 @@ class HotspotAnnotationService:
         return annotation
 
 
-def _fit(geometry: PolygonGeometry, hotspot: Hotspot) -> dict[str, Any]:
-    """Clamp vertices to the hotspot image."""
-    return fit_to_bounds(geometry, float(hotspot.image_width), float(hotspot.image_height))
+def _fit(
+    geometry: PolygonGeometry | None, curve: CurveGeometry | None, hotspot: Hotspot
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """Clamp the shape to the hotspot image: the (geometry, curve) pair to store."""
+    return fit_shape_to_bounds(geometry, curve, float(hotspot.image_width), float(hotspot.image_height))
