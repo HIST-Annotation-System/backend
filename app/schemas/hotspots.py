@@ -7,8 +7,9 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_vali
 
 from app.core.constants import NAME_MAX_LENGTH, NAME_MIN_LENGTH
 from app.models.hotspot import HotspotBatchStatus, HotspotFeature, HotspotImageType
+from app.schemas.tags import TagRead
 
-HOTSPOT_UPDATE_EMPTY = "Provide name and/or folder_id."
+HOTSPOT_UPDATE_EMPTY = "Provide name, folder_id and/or reannotated."
 DUPLICATE_BOXES = "Each box may be listed only once."
 HOTSPOT_BATCH_MAX_BOXES = 100
 
@@ -16,13 +17,25 @@ Name = Annotated[str, StringConstraints(strip_whitespace=True, min_length=NAME_M
 
 
 class HotspotSort(enum.StrEnum):
-    """What the catalog is ordered by: creation time, or one of the HotspotFeature descriptors."""
+    """What the catalog is ordered by: creation time, one of the HotspotFeature descriptors, the summed tag
+    weights, or the weight of the importance/accuracy tag."""
 
     CREATED_AT = "created_at"
     ENTROPY = HotspotFeature.ENTROPY.value
     GLCM_CONTRAST = HotspotFeature.GLCM_CONTRAST.value
     EDGE_DENSITY = HotspotFeature.EDGE_DENSITY.value
     COLORFULNESS = HotspotFeature.COLORFULNESS.value
+    SCORE = "score"
+    IMPORTANCE = "importance"
+    ACCURACY = "accuracy"
+
+
+class HotspotStatus(enum.StrEnum):
+    """Where a hotspot is in the review: tagged means both importance and accuracy are set."""
+
+    UNTAGGED = "untagged"
+    TO_REANNOTATE = "to_reannotate"
+    REANNOTATED = "reannotated"
 
 
 class SortOrder(enum.StrEnum):
@@ -80,10 +93,11 @@ class HotspotBatchRead(BaseModel):
 class HotspotUpdate(BaseModel):
     name: Name | None = None
     folder_id: uuid.UUID | None = None
+    reannotated: bool | None = None
 
     @model_validator(mode="after")
     def _require_change(self) -> Self:
-        if self.name is None and self.folder_id is None:
+        if self.name is None and self.folder_id is None and self.reannotated is None:
             raise ValueError(HOTSPOT_UPDATE_EMPTY)
         return self
 
@@ -106,4 +120,10 @@ class HotspotRead(BaseModel):
     mpp: float | None
     # HotspotFeature value -> descriptor; null when it could not be computed (e.g. missing thumbnail).
     features: dict[str, float] | None
+    tags: list[TagRead]
+    score: int
+    reannotated_at: datetime | None
+    # Who set the latest importance/accuracy verdict.
+    assessed_by: str | None
+    annotation_count: int
     created_at: datetime

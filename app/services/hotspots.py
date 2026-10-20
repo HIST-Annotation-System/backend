@@ -1,5 +1,6 @@
 import logging
 import uuid
+from collections.abc import Callable, Collection
 from datetime import UTC, datetime, timedelta
 from pathlib import PurePath
 
@@ -10,6 +11,7 @@ from app.core.constants import NAME_MAX_LENGTH
 from app.exceptions.errors import AppError, ConflictError, InvalidInputError, NotFoundError, StorageError
 from app.models.hotspot import Hotspot, HotspotBatch, HotspotBatchStatus, HotspotFeature, HotspotFolder
 from app.models.slide import Slide
+from app.models.tag import TagDimension
 from app.repositories.hotspots import HotspotRepository
 from app.repositories.slides import SlideRepository
 from app.schemas.hotspots import (
@@ -18,6 +20,7 @@ from app.schemas.hotspots import (
     HotspotFolderRead,
     HotspotRead,
     HotspotSort,
+    HotspotStatus,
     HotspotUpdate,
     SortOrder,
 )
@@ -55,6 +58,29 @@ def require_hotspot(hotspots: HotspotRepository, hotspot_id: uuid.UUID) -> Hotsp
     if hotspot is None:
         raise NotFoundError(HOTSPOT_NOT_FOUND.format(hotspot_id=hotspot_id))
     return hotspot
+
+
+def _status(hotspot: Hotspot) -> HotspotStatus:
+    if hotspot.reannotated_at is not None:
+        return HotspotStatus.REANNOTATED
+    if any(hotspot.dimension_tag(dimension) is None for dimension in TagDimension):
+        return HotspotStatus.UNTAGGED
+    return HotspotStatus.TO_REANNOTATE
+
+
+def _sort_key(sort: HotspotSort) -> Callable[[Hotspot], float | None]:
+    """The value a hotspot is sorted by; None when it has none (no such tag, or a feature not computed)."""
+    if sort == HotspotSort.SCORE:
+        return lambda hotspot: hotspot.score
+    if sort in (HotspotSort.IMPORTANCE, HotspotSort.ACCURACY):
+        dimension = TagDimension(sort.value)
+
+        def tag_weight(hotspot: Hotspot) -> float | None:
+            tag = hotspot.dimension_tag(dimension)
+            return None if tag is None else tag.weight
+
+        return tag_weight
+    return lambda hotspot: (hotspot.features or {}).get(sort.value)
 
 
 def fail_interrupted_batches(session_factory: sessionmaker[Session], now: datetime | None = None) -> None:
@@ -117,17 +143,25 @@ class HotspotService:
         sort: HotspotSort = HotspotSort.CREATED_AT,
         order: SortOrder = SortOrder.DESC,
         slide_id: uuid.UUID | None = None,
+        status: HotspotStatus | None = None,
+        tag_ids: Collection[int] = (),
     ) -> list[HotspotRead]:
-        """Hotspots ordered by creation time or by an image feature (ties and missing values: newest first;
-        hotspots whose feature could not be computed always come last).
+        """Hotspots in the review `status` that carry all `tag_ids`, ordered by creation time, an image feature
+        or their tags (ties and missing values: newest first; hotspots without a value always come last).
         """
-        hotspots = list(self._hotspots.list_hotspots(folder_id, slide_id))  # newest first
+        hotspots = [
+            hotspot
+            for hotspot in self._hotspots.list_hotspots(folder_id, slide_id)  # newest first
+            if (status is None or _status(hotspot) == status)
+            and set(tag_ids) <= {link.tag_id for link in hotspot.tag_links}
+        ]
         self._fill_missing_features(hotspots)
         if sort != HotspotSort.CREATED_AT:
-            known = [hotspot for hotspot in hotspots if hotspot.features and sort.value in hotspot.features]
-            unknown = [hotspot for hotspot in hotspots if not (hotspot.features and sort.value in hotspot.features)]
+            key = _sort_key(sort)
+            known = [hotspot for hotspot in hotspots if key(hotspot) is not None]
+            unknown = [hotspot for hotspot in hotspots if key(hotspot) is None]
             # A stable sort keeps the newest-first order among equal values.
-            known.sort(key=lambda hotspot: (hotspot.features or {})[sort.value], reverse=order == SortOrder.DESC)
+            known.sort(key=lambda hotspot: key(hotspot) or 0, reverse=order == SortOrder.DESC)
             hotspots = known + unknown
         elif order == SortOrder.ASC:
             hotspots.reverse()
@@ -213,6 +247,10 @@ class HotspotService:
             hotspot.folder_id = data.folder_id
         if data.name is not None:
             hotspot.name = data.name
+        if data.reannotated is False:
+            hotspot.reannotated_at = None
+        elif data.reannotated and hotspot.reannotated_at is None:
+            hotspot.reannotated_at = datetime.now(UTC)
         return HotspotRead.model_validate(self._hotspots.save(hotspot))
 
     def delete_hotspot(self, hotspot_id: uuid.UUID) -> None:

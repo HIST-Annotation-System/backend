@@ -46,6 +46,9 @@ class HotspotRepository:
             statement = statement.where(Hotspot.slide_id == slide_id)
         return self._session.scalars(statement).all()
 
+    def list_by_ids(self, hotspot_ids: Sequence[uuid.UUID]) -> Sequence[Hotspot]:
+        return self._session.scalars(select(Hotspot).where(Hotspot.id.in_(hotspot_ids))).all()
+
     def get_batch(self, batch_id: uuid.UUID) -> HotspotBatch | None:
         return self._session.get(HotspotBatch, batch_id)
 

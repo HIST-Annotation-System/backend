@@ -3,14 +3,16 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import DateTime, Enum, ForeignKey, String, Text, func
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy import DateTime, Enum, ForeignKey, String, Text, func, select
+from sqlalchemy.orm import Mapped, column_property, mapped_column, relationship
 
 if TYPE_CHECKING:
     from app.models.cell_type import CellType
+    from app.models.tag import HotspotTag, Tag
 
 from app.core.constants import NAME_MAX_LENGTH
 from app.models.base import Base, JsonType, NullableJsonType
+from app.models.tag import TagDimension
 
 
 class HotspotFolder(Base):
@@ -78,7 +80,34 @@ class Hotspot(Base):
     mpp: Mapped[float | None]
     # HotspotFeature value -> descriptor of the thumbnail; null (or missing a key) until computed.
     features: Mapped[dict[str, float] | None] = mapped_column(JsonType)
+    # When an annotator marked the hotspot as reannotated; cleared when an expert changes its verdict.
+    reannotated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    tag_links: Mapped[list["HotspotTag"]] = relationship(
+        lazy="selectin", cascade="all, delete-orphan", passive_deletes=True
+    )
+
+    @property
+    def tags(self) -> list["Tag"]:
+        """Core tags first (in TagDimension order), then the rest by name."""
+        order = list(TagDimension)
+        tags = (link.tag for link in self.tag_links)
+        return sorted(tags, key=lambda tag: (order.index(tag.dimension) if tag.dimension else len(order), tag.name))
+
+    @property
+    def score(self) -> int:
+        return sum(link.tag.weight for link in self.tag_links)
+
+    def dimension_tag(self, dimension: TagDimension) -> "Tag | None":
+        return next((link.tag for link in self.tag_links if link.tag.dimension == dimension), None)
+
+    @property
+    def assessed_by(self) -> str | None:
+        """Who set the latest importance/accuracy verdict (None if nobody did, or the account is gone)."""
+        verdicts = [link for link in self.tag_links if link.tag.dimension is not None]
+        latest = max(verdicts, key=lambda link: link.created_at, default=None)
+        return latest.added_by.username if latest and latest.added_by else None
 
 
 class HotspotAnnotation(Base):
@@ -94,6 +123,15 @@ class HotspotAnnotation(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     cell_type: Mapped["CellType | None"] = relationship(back_populates="hotspot_annotations")
+
+
+# Loaded with every hotspot (a correlated subquery), so each read shows how much is already annotated.
+Hotspot.annotation_count = column_property(
+    select(func.count(HotspotAnnotation.id))
+    .where(HotspotAnnotation.hotspot_id == Hotspot.id)
+    .correlate_except(HotspotAnnotation)
+    .scalar_subquery()
+)
 
 
 class HotspotBatchStatus(enum.StrEnum):

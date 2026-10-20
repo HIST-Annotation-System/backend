@@ -6,6 +6,7 @@ from app.models.group import AnnotationGroup
 from app.models.hotspot import Hotspot, HotspotAnnotation, HotspotBatch, HotspotFolder
 from app.models.profile import AnnotatorProfile
 from app.models.slide import Slide, SlideStatus
+from app.models.tag import HotspotTag, Tag, TagDimension
 
 __all__ = [
     "Base",
@@ -22,4 +23,7 @@ __all__ = [
     "Hotspot",
     "HotspotAnnotation",
     "HotspotBatch",
+    "Tag",
+    "TagDimension",
+    "HotspotTag",
 ]

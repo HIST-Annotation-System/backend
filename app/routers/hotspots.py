@@ -1,11 +1,18 @@
 import uuid
+from typing import Annotated
 
-from fastapi import APIRouter, Response, UploadFile, status
+from fastapi import APIRouter, Query, Response, UploadFile, status
 from fastapi.responses import JSONResponse
 
 from app.core.constants import CONTENT_DISPOSITION_ATTACHMENT, MEDIA_TYPE_GEOJSON
+from app.dependencies.auth import CurrentUserDep
 from app.dependencies.resources import ResourcesDep
-from app.dependencies.services import HotspotAnnotationServiceDep, HotspotServiceDep, run_hotspot_batch
+from app.dependencies.services import (
+    HotspotAnnotationServiceDep,
+    HotspotServiceDep,
+    TagServiceDep,
+    run_hotspot_batch,
+)
 from app.schemas.annotations import AnnotationCreate, AnnotationRead, AnnotationUpdate
 from app.schemas.hotspots import (
     HotspotBatchCreate,
@@ -14,9 +21,11 @@ from app.schemas.hotspots import (
     HotspotFolderWrite,
     HotspotRead,
     HotspotSort,
+    HotspotStatus,
     HotspotUpdate,
     SortOrder,
 )
+from app.schemas.tags import HotspotTagsBulk
 from app.services.hotspot_images import UPLOAD_MAX_BYTES
 from app.services.slide_analysis import MEDIA_TYPE_JPEG
 
@@ -64,8 +73,16 @@ def list_hotspots(
     slide_id: uuid.UUID | None = None,
     sort: HotspotSort = HotspotSort.CREATED_AT,
     order: SortOrder = SortOrder.DESC,
+    review_status: Annotated[HotspotStatus | None, Query(alias="status")] = None,
+    tag_ids: Annotated[list[int] | None, Query()] = None,
 ) -> list[HotspotRead]:
-    return service.list_hotspots(folder_id, sort, order, slide_id)
+    """All folders when `folder_id` is left out; `tag_ids` keeps hotspots that carry every listed tag."""
+    return service.list_hotspots(folder_id, sort, order, slide_id, review_status, tag_ids or ())
+
+
+@router.post("/hotspots/tags/bulk", status_code=status.HTTP_204_NO_CONTENT)
+def tag_hotspots(data: HotspotTagsBulk, service: TagServiceDep, user: CurrentUserDep) -> None:
+    service.tag_hotspots(data.hotspot_ids, data.add, data.remove, user)
 
 
 @router.post("/hotspot-batches", response_model=HotspotBatchRead, status_code=status.HTTP_202_ACCEPTED)
@@ -102,6 +119,21 @@ def update_hotspot(hotspot_id: uuid.UUID, data: HotspotUpdate, service: HotspotS
 @router.delete("/hotspots/{hotspot_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_hotspot(hotspot_id: uuid.UUID, service: HotspotServiceDep) -> None:
     service.delete_hotspot(hotspot_id)
+
+
+@router.put("/hotspots/{hotspot_id}/tags/{tag_id}", response_model=HotspotRead)
+def add_hotspot_tag(hotspot_id: uuid.UUID, tag_id: int, service: TagServiceDep, user: CurrentUserDep) -> HotspotRead:
+    """A core tag replaces the hotspot's tag of the same dimension."""
+    (hotspot,) = service.tag_hotspots([hotspot_id], [tag_id], [], user)
+    return HotspotRead.model_validate(hotspot)
+
+
+@router.delete("/hotspots/{hotspot_id}/tags/{tag_id}", response_model=HotspotRead)
+def remove_hotspot_tag(
+    hotspot_id: uuid.UUID, tag_id: int, service: TagServiceDep, user: CurrentUserDep
+) -> HotspotRead:
+    (hotspot,) = service.tag_hotspots([hotspot_id], [], [tag_id], user)
+    return HotspotRead.model_validate(hotspot)
 
 
 @router.get("/hotspots/{hotspot_id}/image")
