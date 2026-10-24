@@ -1,6 +1,6 @@
 from collections.abc import Sequence
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models.cell_type import CellType
@@ -15,20 +15,21 @@ class CellTypeRepository:
         return self._session.get(CellType, cell_type_id)
 
     def get_by_name(self, name: str) -> CellType | None:
-        return self._session.scalars(select(CellType).where(CellType.name == name)).first()
+        """Case-insensitive, matching the unique index on lower(name)."""
+        return self._session.scalars(select(CellType).where(func.lower(CellType.name) == name.lower())).first()
 
     def list_all(self) -> Sequence[CellType]:
         return self._session.scalars(select(CellType).order_by(CellType.name)).all()
 
     def create(self, name: str) -> CellType:
-        cell_type = CellType(name=name)
-        self._session.add(cell_type)
-        self._session.flush()
-        return cell_type
+        return self.save(CellType(name=name))
 
     def save(self, cell_type: CellType) -> CellType:
-        self._session.add(cell_type)
-        self._session.flush()
+        # A savepoint, so a unique violation (a concurrent request took the name) leaves the session usable
+        # and the caller can turn the IntegrityError into an API error.
+        with self._session.begin_nested():
+            self._session.add(cell_type)
+            self._session.flush()
         return cell_type
 
     def delete(self, cell_type: CellType) -> None:
