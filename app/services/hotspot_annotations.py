@@ -2,6 +2,7 @@ import uuid
 from typing import Any
 
 from app.exceptions.errors import ConflictError, InvalidInputError, NotFoundError
+from app.models.account import Account
 from app.models.hotspot import Hotspot, HotspotAnnotation
 from app.repositories.cell_types import CellTypeRepository
 from app.repositories.hotspots import HotspotRepository
@@ -35,7 +36,7 @@ class HotspotAnnotationService:
         require_hotspot(self._hotspots, hotspot_id)
         return [AnnotationRead.model_validate(item) for item in self._hotspots.list_annotations(hotspot_id)]
 
-    def create_annotation(self, hotspot_id: uuid.UUID, data: AnnotationCreate) -> AnnotationRead:
+    def create_annotation(self, hotspot_id: uuid.UUID, data: AnnotationCreate, author: Account) -> AnnotationRead:
         hotspot = require_hotspot(self._hotspots, hotspot_id)
         assert data.cell_type_id is not None
         self._require_cell_type(data.cell_type_id)
@@ -49,6 +50,7 @@ class HotspotAnnotationService:
             cell_type_id=data.cell_type_id,
             geometry=geometry,
             curve=curve,
+            created_by_id=author.id,
         )
         return AnnotationRead.model_validate(self._hotspots.save(annotation))
 

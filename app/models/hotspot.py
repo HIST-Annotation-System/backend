@@ -82,6 +82,9 @@ class Hotspot(Base):
     features: Mapped[dict[str, float] | None] = mapped_column(JsonType)
     # When an annotator marked the hotspot as reannotated; cleared when an expert changes its verdict.
     reannotated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Who marked it reannotated; null while it is not, for marks made before this was recorded, and once that
+    # account is deleted.
+    reannotated_by_id: Mapped[int | None] = mapped_column(ForeignKey("accounts.id", ondelete="SET NULL"), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     tag_links: Mapped[list["HotspotTag"]] = relationship(
@@ -120,6 +123,8 @@ class HotspotAnnotation(Base):
     geometry: Mapped[dict[str, Any]] = mapped_column(JsonType)
     # Bézier path the polygon was drawn as (same pixels); NULL for plain polygons.
     curve: Mapped[dict[str, Any] | None] = mapped_column(NullableJsonType, nullable=True)
+    # Who drew it; null for annotations drawn before this was recorded and once that account is deleted.
+    created_by_id: Mapped[int | None] = mapped_column(ForeignKey("accounts.id", ondelete="SET NULL"), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     cell_type: Mapped["CellType | None"] = relationship(back_populates="hotspot_annotations")

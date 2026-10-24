@@ -9,6 +9,7 @@ from app.dependencies.resources import AppResources, ResourcesDep, SessionDep
 from app.repositories.cell_types import CellTypeRepository
 from app.repositories.hotspots import HotspotRepository
 from app.repositories.slides import SlideRepository
+from app.repositories.stats import StatsRepository
 from app.repositories.tags import TagRepository
 from app.services.cell_types import CellTypeService
 from app.services.hotspot_annotations import HotspotAnnotationService
@@ -17,6 +18,7 @@ from app.services.slide_files import SlideFileService
 from app.services.slide_ingest import SlideIngestService
 from app.services.slide_upload import SlideUploadService
 from app.services.slides import SlideService
+from app.services.stats import StatsService
 from app.services.storage_browser import StorageBrowserService
 from app.services.tags import TagService
 
@@ -68,6 +70,10 @@ def get_tag_service(session: SessionDep) -> TagService:
     return TagService(TagRepository(session), HotspotRepository(session))
 
 
+def get_stats_service(session: SessionDep) -> StatsService:
+    return StatsService(StatsRepository(session))
+
+
 def get_storage_browser_service(resources: ResourcesDep) -> StorageBrowserService:
     return StorageBrowserService(resources.storage)
 
@@ -79,4 +85,5 @@ CellTypeServiceDep = Annotated[CellTypeService, Depends(get_cell_type_service)]
 HotspotServiceDep = Annotated[HotspotService, Depends(get_hotspot_service)]
 HotspotAnnotationServiceDep = Annotated[HotspotAnnotationService, Depends(get_hotspot_annotation_service)]
 TagServiceDep = Annotated[TagService, Depends(get_tag_service)]
+StatsServiceDep = Annotated[StatsService, Depends(get_stats_service)]
 StorageBrowserServiceDep = Annotated[StorageBrowserService, Depends(get_storage_browser_service)]

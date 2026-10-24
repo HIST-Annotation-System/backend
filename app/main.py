@@ -11,7 +11,7 @@ from app.exceptions.errors import register_exception_handlers
 from app.middleware.request_logging import RequestLoggingMiddleware
 from app.services.hotspots import fail_interrupted_batches
 from app.services.slide_ingest import fail_interrupted_ingests
-from app.routers import auth, categories, cell_types, groups, hotspots, slides, storage, tags, upload, users
+from app.routers import auth, categories, cell_types, groups, hotspots, slides, stats, storage, tags, upload, users
 
 configure_logging(settings.LOG_LEVEL)
 
@@ -57,6 +57,7 @@ def create_app() -> FastAPI:
     app.include_router(cell_types.router, prefix=f"{settings.API_V1_STR}/cell-types", tags=["Cell Types"])
     app.include_router(hotspots.router, prefix=settings.API_V1_STR, tags=["Hotspots"])
     app.include_router(tags.router, prefix=f"{settings.API_V1_STR}/tags", tags=["Tags"])
+    app.include_router(stats.router, prefix=f"{settings.API_V1_STR}/stats", tags=["Stats"])
 
     @app.get("/health", tags=["Health"])
     def health_check() -> dict[str, str]:
