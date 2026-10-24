@@ -112,8 +112,10 @@ def get_hotspot(hotspot_id: uuid.UUID, service: HotspotServiceDep) -> HotspotRea
 
 
 @router.patch("/hotspots/{hotspot_id}", response_model=HotspotRead)
-def update_hotspot(hotspot_id: uuid.UUID, data: HotspotUpdate, service: HotspotServiceDep) -> HotspotRead:
-    return service.update_hotspot(hotspot_id, data)
+def update_hotspot(
+    hotspot_id: uuid.UUID, data: HotspotUpdate, service: HotspotServiceDep, user: CurrentUserDep
+) -> HotspotRead:
+    return service.update_hotspot(hotspot_id, data, user)
 
 
 @router.delete("/hotspots/{hotspot_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -166,9 +168,9 @@ def export_hotspot_annotations(hotspot_id: uuid.UUID, service: HotspotAnnotation
     "/hotspots/{hotspot_id}/annotations", response_model=AnnotationRead, status_code=status.HTTP_201_CREATED
 )
 def create_hotspot_annotation(
-    hotspot_id: uuid.UUID, data: AnnotationCreate, service: HotspotAnnotationServiceDep
+    hotspot_id: uuid.UUID, data: AnnotationCreate, service: HotspotAnnotationServiceDep, user: CurrentUserDep
 ) -> AnnotationRead:
-    return service.create_annotation(hotspot_id, data)
+    return service.create_annotation(hotspot_id, data, user)
 
 
 @router.patch("/hotspots/{hotspot_id}/annotations/{annotation_id}", response_model=AnnotationRead)

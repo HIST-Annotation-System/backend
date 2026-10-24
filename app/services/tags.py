@@ -95,7 +95,7 @@ class TagService:
                 HotspotTag(tag=tag, added_by_id=user.id) for tag in added if tag.id not in present
             ]
             if _verdict(hotspot) != verdict:
-                hotspot.reannotated_at = None
+                hotspot.reannotated_at, hotspot.reannotated_by_id = None, None
         self._hotspots.save_all(hotspots)
         return hotspots
 

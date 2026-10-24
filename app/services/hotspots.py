@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.constants import NAME_MAX_LENGTH
 from app.exceptions.errors import AppError, ConflictError, InvalidInputError, NotFoundError, StorageError
+from app.models.account import Account
 from app.models.hotspot import Hotspot, HotspotBatch, HotspotBatchStatus, HotspotFeature, HotspotFolder
 from app.models.slide import Slide
 from app.models.tag import TagDimension
@@ -240,7 +241,7 @@ class HotspotService:
         name = PurePath(filename).stem.strip()[:NAME_MAX_LENGTH] or UPLOADED_IMAGE_DEFAULT_NAME
         return self._store(Hotspot(id=uuid.uuid4(), folder_id=folder_id, name=name), image)
 
-    def update_hotspot(self, hotspot_id: uuid.UUID, data: HotspotUpdate) -> HotspotRead:
+    def update_hotspot(self, hotspot_id: uuid.UUID, data: HotspotUpdate, user: Account) -> HotspotRead:
         hotspot = require_hotspot(self._hotspots, hotspot_id)
         if data.folder_id is not None:
             self._require_folder(data.folder_id)
@@ -248,9 +249,9 @@ class HotspotService:
         if data.name is not None:
             hotspot.name = data.name
         if data.reannotated is False:
-            hotspot.reannotated_at = None
+            hotspot.reannotated_at, hotspot.reannotated_by_id = None, None
         elif data.reannotated and hotspot.reannotated_at is None:
-            hotspot.reannotated_at = datetime.now(UTC)
+            hotspot.reannotated_at, hotspot.reannotated_by_id = datetime.now(UTC), user.id
         return HotspotRead.model_validate(self._hotspots.save(hotspot))
 
     def delete_hotspot(self, hotspot_id: uuid.UUID) -> None:
