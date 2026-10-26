@@ -5,12 +5,16 @@ from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, computed_field, field_validator, model_validator
 
+from app.models.hotspot import AnnotationKind
+
 ANNOTATION_MAX_VERTICES = 10_000
 POLYGON_SINGLE_RING = "A polygon must have exactly one exterior ring (holes are not supported)."
 POLYGON_NOT_FINITE = "Coordinates must be finite numbers."
 POLYGON_TOO_FEW_VERTICES = "A polygon needs at least 3 distinct vertices."
 POLYGON_TOO_MANY_VERTICES = f"A polygon may have at most {ANNOTATION_MAX_VERTICES} vertices."
-ANNOTATION_UPDATE_EMPTY = "Provide cell_type_id, geometry and/or curve."
+ANNOTATION_UPDATE_EMPTY = "Provide kind, cell_type_id, geometry and/or curve."
+CELL_TYPE_REQUIRED = "cell_type_id is required"
+EXCLUDED_WITH_CELL_TYPE = "An excluded area has no cell type."
 CURVE_MIN_POINTS = 3
 # Polygon vertices per curved segment of a flattened curve; must match the frontend.
 CURVE_SEGMENT_STEPS = 16
@@ -89,9 +93,19 @@ class CurveGeometry(BaseModel):
         return points
 
 
+def _resolve_class_id(cell_type_id: int | None, class_id: int | str | None) -> int | None:
+    if cell_type_id is None and class_id is not None:
+        try:
+            return int(class_id)
+        except ValueError:
+            raise ValueError("class_id must be convertible to int")
+    return cell_type_id
+
+
 class AnnotationCreate(BaseModel):
     # The annotator's own UUID (keeps its undo/redo history consistent); generated when omitted.
     id: uuid.UUID | None = None
+    kind: AnnotationKind = AnnotationKind.CELL
     cell_type_id: int | None = None
     class_id: int | str | None = None
     geometry: PolygonGeometry
@@ -99,17 +113,18 @@ class AnnotationCreate(BaseModel):
 
     @model_validator(mode="after")
     def _resolve_cell_type(self) -> Self:
-        if self.cell_type_id is None and self.class_id is not None:
-            try:
-                self.cell_type_id = int(self.class_id)
-            except ValueError:
-                raise ValueError("class_id must be convertible to int")
-        if self.cell_type_id is None:
-            raise ValueError("cell_type_id is required")
+        self.cell_type_id = _resolve_class_id(self.cell_type_id, self.class_id)
+        if self.kind == AnnotationKind.EXCLUDED and self.cell_type_id is not None:
+            raise ValueError(EXCLUDED_WITH_CELL_TYPE)
+        if self.kind == AnnotationKind.CELL and self.cell_type_id is None:
+            raise ValueError(CELL_TYPE_REQUIRED)
         return self
 
 
 class AnnotationUpdate(BaseModel):
+    """A switch to `excluded` clears the cell type; a switch to `cell` needs one."""
+
+    kind: AnnotationKind | None = None
     cell_type_id: int | None = None
     class_id: int | str | None = None
     geometry: PolygonGeometry | None = None
@@ -117,12 +132,17 @@ class AnnotationUpdate(BaseModel):
 
     @model_validator(mode="after")
     def _require_change(self) -> Self:
-        if self.cell_type_id is None and self.class_id is not None:
-            try:
-                self.cell_type_id = int(self.class_id)
-            except ValueError:
-                raise ValueError("class_id must be convertible to int")
-        if self.cell_type_id is None and self.geometry is None and "curve" not in self.model_fields_set:
+        self.cell_type_id = _resolve_class_id(self.cell_type_id, self.class_id)
+        if self.kind == AnnotationKind.EXCLUDED and self.cell_type_id is not None:
+            raise ValueError(EXCLUDED_WITH_CELL_TYPE)
+        if self.kind == AnnotationKind.CELL and self.cell_type_id is None:
+            raise ValueError(CELL_TYPE_REQUIRED)
+        if (
+            self.kind is None
+            and self.cell_type_id is None
+            and self.geometry is None
+            and "curve" not in self.model_fields_set
+        ):
             raise ValueError(ANNOTATION_UPDATE_EMPTY)
         return self
 
@@ -131,10 +151,16 @@ class AnnotationRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
+    kind: AnnotationKind
     cell_type_id: int | None
     geometry: PolygonGeometry
     curve: CurveGeometry | None = None
     created_at: datetime
+    # A cell lying wholly inside an excluded area of its hotspot (saved anyway; the client warns).
+    inside_excluded: bool = False
+    # Excluded areas merged into this one on save and gone since (the saved draft's own id when another area was
+    # kept); the client removes them. Always empty for cells and slide annotations.
+    absorbed_ids: list[uuid.UUID] = []
 
     @computed_field
     @property
@@ -152,6 +178,7 @@ class AnnotationFeatureProperties(BaseModel):
 
     objectType: Literal["annotation"] = "annotation"
     classification: AnnotationClassification
+    kind: AnnotationKind = AnnotationKind.CELL
 
 
 class AnnotationFeature(BaseModel):

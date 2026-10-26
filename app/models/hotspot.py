@@ -113,12 +113,36 @@ class Hotspot(Base):
         return latest.added_by.username if latest and latest.added_by else None
 
 
+class AnnotationKind(enum.StrEnum):
+    """A cell outline, or an area left out of model training (blur, fold, dust, slide edge)."""
+
+    CELL = "cell"
+    EXCLUDED = "excluded"
+
+
+# Must stay >= the longest AnnotationKind value.
+ANNOTATION_KIND_MAX_LENGTH = 16
+
+
 class HotspotAnnotation(Base):
     __tablename__ = "hotspot_annotations"
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     hotspot_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("hotspots.id", ondelete="CASCADE"), index=True)
     cell_type_id: Mapped[int | None] = mapped_column(ForeignKey("cell_types.id", ondelete="RESTRICT"), index=True)
+    # Excluded areas have no cell type.
+    kind: Mapped[AnnotationKind] = mapped_column(
+        Enum(
+            AnnotationKind,
+            name="annotation_kind",
+            native_enum=False,
+            create_constraint=True,
+            length=ANNOTATION_KIND_MAX_LENGTH,
+            values_callable=lambda kinds: [item.value for item in kinds],
+        ),
+        default=AnnotationKind.CELL,
+        server_default=AnnotationKind.CELL.value,
+    )
     # GeoJSON Polygon in hotspot image pixels (closed exterior ring).
     geometry: Mapped[dict[str, Any]] = mapped_column(JsonType)
     # Bézier path the polygon was drawn as (same pixels); NULL for plain polygons.
@@ -130,10 +154,10 @@ class HotspotAnnotation(Base):
     cell_type: Mapped["CellType | None"] = relationship(back_populates="hotspot_annotations")
 
 
-# Loaded with every hotspot (a correlated subquery), so each read shows how much is already annotated.
+# Loaded with every hotspot (a correlated subquery), so each read shows how many cells are already annotated.
 Hotspot.annotation_count = column_property(
     select(func.count(HotspotAnnotation.id))
-    .where(HotspotAnnotation.hotspot_id == Hotspot.id)
+    .where(HotspotAnnotation.hotspot_id == Hotspot.id, HotspotAnnotation.kind == AnnotationKind.CELL)
     .correlate_except(HotspotAnnotation)
     .scalar_subquery()
 )

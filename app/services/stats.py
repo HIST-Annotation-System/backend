@@ -3,7 +3,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 from app.models.account import Role
-from app.models.hotspot import Hotspot, HotspotAnnotation
+from app.models.hotspot import AnnotationKind, Hotspot, HotspotAnnotation
 from app.repositories.stats import StatsRepository
 from app.schemas.hotspots import HotspotStatus
 from app.schemas.stats import (
@@ -119,7 +119,9 @@ class StatsService:
         today = now.date()
         first_day = today - timedelta(days=ACTIVITY_DAYS - 1)
         since = datetime.combine(first_day, datetime.min.time(), tzinfo=UTC)
-        annotations = self._stats.daily_counts(HotspotAnnotation.created_at, since)
+        annotations = self._stats.daily_counts(
+            HotspotAnnotation.created_at, since, HotspotAnnotation.kind == AnnotationKind.CELL
+        )
         reannotated = self._stats.daily_counts(Hotspot.reannotated_at, since)
         created = self._stats.daily_counts(Hotspot.created_at, since)
         days = [first_day + timedelta(days=offset) for offset in range(ACTIVITY_DAYS)]

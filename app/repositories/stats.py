@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.models.account import Account
 from app.models.cell_type import CellType
-from app.models.hotspot import Hotspot, HotspotAnnotation, HotspotFolder
+from app.models.hotspot import AnnotationKind, Hotspot, HotspotAnnotation, HotspotFolder
 from app.models.profile import AnnotatorProfile
 from app.models.slide import Slide, SlideStatus
 from app.models.tag import HotspotTag, Tag, TagDimension
@@ -64,7 +64,8 @@ class StatsRepository:
         return self._session.execute(statement).all()
 
     def count_annotations(self, unattributed_only: bool = False) -> int:
-        statement = select(func.count(HotspotAnnotation.id))
+        """Cell annotations (excluded areas are not annotation work counted here)."""
+        statement = select(func.count(HotspotAnnotation.id)).where(HotspotAnnotation.kind == AnnotationKind.CELL)
         if unattributed_only:
             statement = statement.where(HotspotAnnotation.created_by_id.is_(None))
         return self._session.scalar(statement) or 0
@@ -121,7 +122,7 @@ class StatsRepository:
         )
 
     def annotations_by_account(self, recent_since: datetime) -> Sequence[Row[tuple[int | None, int, int, datetime]]]:
-        """(account id, annotations, annotations since `recent_since`, latest annotation time)."""
+        """(account id, cell annotations, cell annotations since `recent_since`, latest cell annotation time)."""
         return self._session.execute(
             select(
                 HotspotAnnotation.created_by_id,
@@ -129,7 +130,7 @@ class StatsRepository:
                 func.count(HotspotAnnotation.id).filter(HotspotAnnotation.created_at >= recent_since),
                 func.max(HotspotAnnotation.created_at),
             )
-            .where(HotspotAnnotation.created_by_id.is_not(None))
+            .where(HotspotAnnotation.created_by_id.is_not(None), HotspotAnnotation.kind == AnnotationKind.CELL)
             .group_by(HotspotAnnotation.created_by_id)
         ).all()
 
@@ -160,11 +161,12 @@ class StatsRepository:
             .order_by(Tag.dimension.is_(None), Tag.dimension.desc(), Tag.weight.desc(), Tag.name)
         ).all()
 
-    def daily_counts(self, column: Any, since: datetime) -> dict[date, int]:
-        """Day (in the database time zone) -> rows whose `column` timestamp falls on it, from `since` on."""
+    def daily_counts(self, column: Any, since: datetime, *where: ColumnElement[bool]) -> dict[date, int]:
+        """Day (in the database time zone) -> rows whose `column` timestamp falls on it, from `since` on, among
+        those matching `where`."""
         day: ColumnElement[date] = func.date(column)
         rows = self._session.execute(
-            select(day, func.count()).where(column >= since).group_by(day)
+            select(day, func.count()).where(column >= since, *where).group_by(day)
         ).all()
         return {_as_date(value): count for value, count in rows}
 

@@ -18,6 +18,7 @@ dependencies = [
     "python-jose[cryptography]>=3.5.0",
     "python-multipart>=0.0.32",
     "scipy>=1.18.1",
+    "shapely>=2.2.0",
     "sqlalchemy>=2.0.52",
 ]
 
@@ -32,5 +33,5 @@ strict = true
 plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
-module = ["scipy.*"]
+module = ["scipy.*", "shapely.*"]
 ignore_missing_imports = true
