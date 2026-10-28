@@ -40,7 +40,8 @@ performance cache that any worker may rebuild at any time.
    database container, so the stack has to exist first.
 3. **Create a local environment file:**
    Copy `.env.example` to `.env.local` (the file read by `app/core/config.py`) and fill in the `BUCKET_*` and
-   `POSTGRES_*` values from `terraform output -raw env_local`. Without a reachable bucket the API still starts
+   `POSTGRES_*` values from `terraform output -raw env_local`. Start the database tunnel
+   (`terraform output -raw tunnel_command`, see [Working as a team](#working-as-a-team)) and keep it running. Without a reachable bucket the API still starts
    but uploads and slide viewing fail, and the log shows which bucket could not be reached; without a reachable
    database it does not start at all.
 4. **Run the environment using Docker Compose:**
@@ -54,8 +55,8 @@ performance cache that any worker may rebuild at any time.
    The `ADMIN_USERNAME` account already exists in RDS. On a fresh database, create it once with
    `docker compose run --rm api python -m scripts.create_admin`.
 
-   The containers reach RDS through Docker's NAT, so their source address is the host's public IP and the
-   `allowed_cidrs` rule covers them - no extra entry needed for the containers.
+   The containers reach RDS through the tunnel on the host: compose overrides `POSTGRES_SERVER` with
+   `host.docker.internal`, so `.env.local` keeps `localhost` for running outside Docker.
 
 5. **Stop the environment:**
    ```bash
@@ -92,15 +93,13 @@ are shared, and a delete removes them for everyone.
 
 What each person needs:
 
-1. **Their IP in `allowed_cidrs`.** The database only accepts connections from the addresses listed in
-   `infra/terraform.tfvars`. Send `curl ifconfig.me` to whoever owns the Terraform state; they add the
-   `/32` and re-apply (~30s, security group only). Until then the backend simply hangs - AWS drops the
-   packets instead of refusing them, so there is no error message to search for. Repeat whenever an IP
-   changes, which routers and campus wifi do regularly.
+1. **Their own AWS key pair, and the tunnel running.** The database is reached only through an SSM
+   tunnel that forwards `localhost:15432` to RDS, from any network. Whoever owns the Terraform state adds
+   their name to `developers` once and sends them their key pair plus the `tunnel_command` line;
+   setup on their side is in [`infra/README.md`](infra/README.md#adding-a-teammate). The key pair can
+   open the tunnel and nothing else.
 2. **A copy of `backend/.env.local`.** It is gitignored on purpose: it holds the RDS master password
    and the IAM secret key. Pass it along out of band, never through the repository.
-3. **Nothing else.** No AWS account and no `~/.aws/credentials` - the app authenticates to S3 with the
-   `BUCKET_*` keys from `.env.local`. Only the person running Terraform needs AWS credentials.
 
 Then `docker compose up -d --build` in `backend/`, and `cp .env.example .env.local && npm install &&
 npm run dev` in `frontend/`. The `admin` account already exists in RDS - log in with the `ADMIN_*`
@@ -215,7 +214,7 @@ The main variables are listed in `.env.example`:
 
 | Variable | Purpose |
 |---|---|
-| `POSTGRES_SERVER`, `POSTGRES_PORT`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` | PostgreSQL connection; `DATABASE_URL` is built from these (see `app/core/config.py`). They point at RDS and come from `terraform output -raw env_local`; compose passes them through unchanged |
+| `POSTGRES_SERVER`, `POSTGRES_PORT`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` | PostgreSQL connection; `DATABASE_URL` is built from these (see `app/core/config.py`). They point at the SSM tunnel (`localhost:15432`) and come from `terraform output -raw env_local`; compose replaces `POSTGRES_SERVER` with `host.docker.internal` |
 | `BUCKET_ENDPOINT` | S3 regional endpoint; the browser uses the same one, because presigned URLs are signed for it |
 | `BUCKET_ACCESS_KEY`, `BUCKET_SECRET_KEY`, `BUCKET_NAME`, `BUCKET_REGION` | Object storage credentials, bucket and region |
 | `SLIDE_CACHE_DIR` | Directory holding local copies of slides |

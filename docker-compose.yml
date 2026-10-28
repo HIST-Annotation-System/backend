@@ -1,8 +1,8 @@
 # Every service loads its config from .env.local via env_file (not ${VAR} interpolation), so
 # `docker compose up` needs no --env-file flag and cannot silently see blank credentials.
 # Nothing stateful runs here: the database is RDS and slides live in S3 (see infra/). Containers
-# reach RDS through Docker's NAT, so the source address is the host's public IP and the security
-# group's /32 rule keeps working.
+# reach RDS through the SSM tunnel on the host (localhost:15432 there), hence the POSTGRES_SERVER
+# override; extra_hosts makes host.docker.internal resolve on Linux too, as it does on Docker Desktop.
 services:
   api:
     build: .
@@ -17,6 +17,9 @@ services:
     env_file: .env.local
     environment:
       SLIDE_CACHE_DIR: /var/lib/wsi-cache
+      POSTGRES_SERVER: host.docker.internal
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     healthcheck:
       test: [ "CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')" ]
       interval: 30s
@@ -31,6 +34,10 @@ services:
     build: .
     command: [ "alembic", "upgrade", "head" ]
     env_file: .env.local
+    environment:
+      POSTGRES_SERVER: host.docker.internal
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
 volumes:
   slide_cache:
