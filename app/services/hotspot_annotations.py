@@ -3,7 +3,7 @@ from typing import Any
 
 from app.exceptions.errors import ConflictError, InvalidInputError, NotFoundError
 from app.models.account import Account
-from app.models.hotspot import AnnotationKind, Hotspot, HotspotAnnotation
+from app.models.hotspot import AnnotationKind, AnnotationSource, Hotspot, HotspotAnnotation
 from app.repositories.cell_types import CellTypeRepository
 from app.repositories.hotspots import HotspotRepository
 from app.schemas.annotations import (
@@ -67,16 +67,24 @@ class HotspotAnnotationService:
             geometry=geometry,
             curve=curve,
             created_by_id=author.id,
+            created_by=author,
         )
         if annotation.kind == AnnotationKind.EXCLUDED:
             return self._save_area(annotation, hotspot)
+        # Annotating by hand first means the model's cells are no longer wanted here (saved in the same commit).
+        self._hotspots.skip_pending_segmentation(hotspot_id)
         return self._read_saved(self._hotspots.save(annotation))
 
     def update_annotation(
-        self, hotspot_id: uuid.UUID, annotation_id: uuid.UUID, data: AnnotationUpdate
+        self, hotspot_id: uuid.UUID, annotation_id: uuid.UUID, data: AnnotationUpdate, author: Account
     ) -> AnnotationRead:
         hotspot = require_hotspot(self._hotspots, hotspot_id)
         annotation = self._require_annotation(hotspot_id, annotation_id)
+        # An annotation belongs to whoever changed it last. A model cell thereby becomes annotator's work;
+        # its `model_version` still says where it began.
+        annotation.source = AnnotationSource.HUMAN
+        # Both, because committed objects are not reloaded: the name in the response must be the new one.
+        annotation.created_by_id, annotation.created_by = author.id, author
         kind = data.kind or annotation.kind
         if data.cell_type_id is not None:
             if kind == AnnotationKind.EXCLUDED:
@@ -158,11 +166,8 @@ class HotspotAnnotationService:
         """The annotation as listed, with its warning against the hotspot's current excluded areas."""
         if annotation.kind == AnnotationKind.EXCLUDED:
             return _read(annotation, False)
-        areas = [
-            item
-            for item in self._hotspots.list_annotations(annotation.hotspot_id)
-            if item.kind == AnnotationKind.EXCLUDED
-        ]
+        # Only the areas: a hotspot can hold thousands of cells, and this runs on every save.
+        areas = self._hotspots.list_excluded_areas(annotation.hotspot_id)
         return _read(annotation, annotation.id in cells_inside_excluded([*areas, annotation]))
 
     def _require_cell_type(self, cell_type_id: int) -> None:

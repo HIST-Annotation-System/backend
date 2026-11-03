@@ -255,6 +255,46 @@ resource "aws_iam_user_policy" "app_s3" {
   })
 }
 
+# The segmentation worker runs outside AWS, on a machine with a GPU, so it gets the least it can work with: it reads
+# hotspot images and writes its results, and has no access to the database.
+resource "aws_iam_user" "ml_worker" {
+  name = "wsi-ml-worker"
+}
+
+resource "aws_iam_access_key" "ml_worker" {
+  user = aws_iam_user.ml_worker.name
+}
+
+resource "aws_iam_user_policy" "ml_worker_s3" {
+  name = "wsi-ml-worker-s3-access"
+  user = aws_iam_user.ml_worker.name
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = "s3:GetObject"
+        Resource = "${aws_s3_bucket.slides.arn}/hotspots/*"
+      },
+      {
+        Effect   = "Allow"
+        Action   = "s3:PutObject"
+        Resource = "${aws_s3_bucket.slides.arn}/hotspots/*/segmentation.json"
+      },
+      {
+        # Without it S3 answers 403 instead of 404 for a missing object (a hotspot deleted before its job ran).
+        Effect   = "Allow"
+        Action   = "s3:ListBucket"
+        Resource = aws_s3_bucket.slides.arn
+        Condition = {
+          StringLike = { "s3:prefix" = "hotspots/*" }
+        }
+      },
+    ]
+  })
+}
+
 # One IAM user per developer, allowed nothing but a port-forward session through the tunnel host.
 resource "aws_iam_user" "dev" {
   for_each = toset(var.developers)

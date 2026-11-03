@@ -17,6 +17,19 @@ output "env_local" {
   EOT
 }
 
+# The BUCKET_* block for ml-worker/.env. Read with: terraform output -raw ml_worker_env
+output "ml_worker_env" {
+  description = "The BUCKET_* block for ml-worker/.env."
+  sensitive   = true
+  value       = <<-EOT
+    BUCKET_ENDPOINT=https://s3.${var.aws_region}.amazonaws.com
+    BUCKET_ACCESS_KEY=${aws_iam_access_key.ml_worker.id}
+    BUCKET_SECRET_KEY=${aws_iam_access_key.ml_worker.secret}
+    BUCKET_NAME=${aws_s3_bucket.slides.id}
+    BUCKET_REGION=${var.aws_region}
+  EOT
+}
+
 # Hand each developer their own pair, out of band. Read with: terraform output -json dev_credentials
 output "dev_credentials" {
   description = "AWS access key per developer, for `aws configure`."

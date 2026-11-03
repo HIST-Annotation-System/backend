@@ -3,12 +3,12 @@ from collections.abc import Sequence
 from datetime import date, datetime
 from typing import Any
 
-from sqlalchemy import ColumnElement, Row, case, distinct, func, null, select
+from sqlalchemy import ColumnElement, Row, and_, case, distinct, func, null, select
 from sqlalchemy.orm import Session
 
 from app.models.account import Account
 from app.models.cell_type import CellType
-from app.models.hotspot import AnnotationKind, Hotspot, HotspotAnnotation, HotspotFolder
+from app.models.hotspot import AnnotationKind, AnnotationSource, Hotspot, HotspotAnnotation, HotspotFolder
 from app.models.profile import AnnotatorProfile
 from app.models.slide import Slide, SlideStatus
 from app.models.tag import HotspotTag, Tag, TagDimension
@@ -64,8 +64,10 @@ class StatsRepository:
         return self._session.execute(statement).all()
 
     def count_annotations(self, unattributed_only: bool = False) -> int:
-        """Cell annotations (excluded areas are not annotation work counted here)."""
-        statement = select(func.count(HotspotAnnotation.id)).where(HotspotAnnotation.kind == AnnotationKind.CELL)
+        """Cell annotations by people (excluded areas and untouched model cells are not work counted here)."""
+        statement = select(func.count(HotspotAnnotation.id)).where(
+            HotspotAnnotation.kind == AnnotationKind.CELL, HotspotAnnotation.source == AnnotationSource.HUMAN
+        )
         if unattributed_only:
             statement = statement.where(HotspotAnnotation.created_by_id.is_(None))
         return self._session.scalar(statement) or 0
@@ -143,11 +145,17 @@ class StatsRepository:
         return {account_id: latest for account_id, latest in rows}
 
     def cell_type_usage(self) -> Sequence[Row[tuple[int, str, int]]]:
-        """(id, name, annotation count) of every cell type, most used first."""
+        """(id, name, annotation count by people) of every cell type, most used first."""
         count = func.count(HotspotAnnotation.id)
         return self._session.execute(
             select(CellType.id, CellType.name, count)
-            .outerjoin(HotspotAnnotation, HotspotAnnotation.cell_type_id == CellType.id)
+            .outerjoin(
+                HotspotAnnotation,
+                and_(
+                    HotspotAnnotation.cell_type_id == CellType.id,
+                    HotspotAnnotation.source == AnnotationSource.HUMAN,
+                ),
+            )
             .group_by(CellType.id, CellType.name)
             .order_by(count.desc(), CellType.name)
         ).all()

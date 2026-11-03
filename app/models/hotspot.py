@@ -7,6 +7,7 @@ from sqlalchemy import DateTime, Enum, ForeignKey, String, Text, func, select
 from sqlalchemy.orm import Mapped, column_property, mapped_column, relationship
 
 if TYPE_CHECKING:
+    from app.models.account import Account
     from app.models.cell_type import CellType
     from app.models.tag import HotspotTag, Tag
 
@@ -41,6 +42,22 @@ class HotspotFeature(enum.StrEnum):
 
 # Must stay >= the longest HotspotImageType value.
 HOTSPOT_IMAGE_TYPE_MAX_LENGTH = 8
+
+
+class SegmentationStatus(enum.StrEnum):
+    """Where the model's run on a hotspot stands. It only ever moves out of `pending`.
+
+    `skipped` means someone started annotating by hand first, so model cells would land on top of their work.
+    """
+
+    PENDING = "pending"
+    DONE = "done"
+    FAILED = "failed"
+    SKIPPED = "skipped"
+
+
+# Must stay >= the longest SegmentationStatus value.
+SEGMENTATION_STATUS_MAX_LENGTH = 16
 
 
 class Hotspot(Base):
@@ -85,6 +102,22 @@ class Hotspot(Base):
     # Who marked it reannotated; null while it is not, for marks made before this was recorded, and once that
     # account is deleted.
     reannotated_by_id: Mapped[int | None] = mapped_column(ForeignKey("accounts.id", ondelete="SET NULL"), index=True)
+    segmentation_status: Mapped[SegmentationStatus] = mapped_column(
+        Enum(
+            SegmentationStatus,
+            name="segmentation_status",
+            native_enum=False,
+            create_constraint=True,
+            length=SEGMENTATION_STATUS_MAX_LENGTH,
+            values_callable=lambda statuses: [item.value for item in statuses],
+        ),
+        default=SegmentationStatus.PENDING,
+        server_default=SegmentationStatus.PENDING.value,
+        index=True,
+    )
+    segmentation_error: Mapped[str | None] = mapped_column(Text)
+    # When a stack last sent the job to its worker; null until one has. See app.services.segmentation.
+    segmentation_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     tag_links: Mapped[list["HotspotTag"]] = relationship(
@@ -124,6 +157,18 @@ class AnnotationKind(enum.StrEnum):
 ANNOTATION_KIND_MAX_LENGTH = 16
 
 
+class AnnotationSource(enum.StrEnum):
+    """`model` is an outline as the model produced it, a starting point for the annotator; editing it makes it `human`."""
+
+    HUMAN = "human"
+    MODEL = "model"
+
+
+# Must stay >= the longest AnnotationSource value.
+ANNOTATION_SOURCE_MAX_LENGTH = 16
+MODEL_VERSION_MAX_LENGTH = 128
+
+
 class HotspotAnnotation(Base):
     __tablename__ = "hotspot_annotations"
 
@@ -143,21 +188,45 @@ class HotspotAnnotation(Base):
         default=AnnotationKind.CELL,
         server_default=AnnotationKind.CELL.value,
     )
+    source: Mapped[AnnotationSource] = mapped_column(
+        Enum(
+            AnnotationSource,
+            name="annotation_source",
+            native_enum=False,
+            create_constraint=True,
+            length=ANNOTATION_SOURCE_MAX_LENGTH,
+            values_callable=lambda sources: [item.value for item in sources],
+        ),
+        default=AnnotationSource.HUMAN,
+        server_default=AnnotationSource.HUMAN.value,
+    )
+    # The model that drew the outline; kept after a person edits it.
+    model_version: Mapped[str | None] = mapped_column(String(MODEL_VERSION_MAX_LENGTH))
     # GeoJSON Polygon in hotspot image pixels (closed exterior ring).
     geometry: Mapped[dict[str, Any]] = mapped_column(JsonType)
     # Bézier path the polygon was drawn as (same pixels); NULL for plain polygons.
     curve: Mapped[dict[str, Any] | None] = mapped_column(NullableJsonType, nullable=True)
-    # Who drew it; null for annotations drawn before this was recorded and once that account is deleted.
+    # Who drew or last changed it; null for untouched model cells, annotations drawn before this was recorded, and
+    # once that account is deleted.
     created_by_id: Mapped[int | None] = mapped_column(ForeignKey("accounts.id", ondelete="SET NULL"), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     cell_type: Mapped["CellType | None"] = relationship(back_populates="hotspot_annotations")
+    created_by: Mapped["Account | None"] = relationship(lazy="joined")
+
+    @property
+    def created_by_name(self) -> str | None:
+        return self.created_by.username if self.created_by else None
 
 
-# Loaded with every hotspot (a correlated subquery), so each read shows how many cells are already annotated.
+# Loaded with every hotspot (a correlated subquery), so each read shows how many cells people have annotated.
 Hotspot.annotation_count = column_property(
     select(func.count(HotspotAnnotation.id))
-    .where(HotspotAnnotation.hotspot_id == Hotspot.id, HotspotAnnotation.kind == AnnotationKind.CELL)
+    .where(
+        HotspotAnnotation.hotspot_id == Hotspot.id,
+        HotspotAnnotation.kind == AnnotationKind.CELL,
+        HotspotAnnotation.source == AnnotationSource.HUMAN,
+    )
     .correlate_except(HotspotAnnotation)
     .scalar_subquery()
 )

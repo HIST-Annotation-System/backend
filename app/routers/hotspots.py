@@ -175,9 +175,13 @@ def create_hotspot_annotation(
 
 @router.patch("/hotspots/{hotspot_id}/annotations/{annotation_id}", response_model=AnnotationRead)
 def update_hotspot_annotation(
-    hotspot_id: uuid.UUID, annotation_id: uuid.UUID, data: AnnotationUpdate, service: HotspotAnnotationServiceDep
+    hotspot_id: uuid.UUID,
+    annotation_id: uuid.UUID,
+    data: AnnotationUpdate,
+    service: HotspotAnnotationServiceDep,
+    user: CurrentUserDep,
 ) -> AnnotationRead:
-    return service.update_annotation(hotspot_id, annotation_id, data)
+    return service.update_annotation(hotspot_id, annotation_id, data, user)
 
 
 @router.delete("/hotspots/{hotspot_id}/annotations/{annotation_id}", status_code=status.HTTP_204_NO_CONTENT)

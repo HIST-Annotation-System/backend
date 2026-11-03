@@ -17,8 +17,9 @@ first.
 | `aws_s3_bucket_cors_configuration.slides` | Lets the browser `PUT` upload parts directly and read the `ETag` back. |
 | `aws_s3_bucket_lifecycle_configuration.slides` | Aborts incomplete multipart uploads after 7 days. |
 | `aws_iam_user.app` + access key + `aws_iam_user_policy.app_s3` | The credentials the backend puts in `BUCKET_ACCESS_KEY`/`BUCKET_SECRET_KEY`, scoped to this one bucket. |
+| `aws_iam_user.ml_worker` + access key + `aws_iam_user_policy.ml_worker_s3` | The segmentation worker's credentials (`terraform output -raw ml_worker_env`): read hotspot images, write `segmentation.json`, nothing else. |
 
-A full `terraform apply` from empty state is **15 to add**, plus 3 per developer.
+A full `terraform apply` from empty state is **18 to add**, plus 3 per developer.
 
 ## Prerequisites
 

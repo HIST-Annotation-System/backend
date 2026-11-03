@@ -5,7 +5,7 @@ from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, computed_field, field_validator, model_validator
 
-from app.models.hotspot import AnnotationKind
+from app.models.hotspot import AnnotationKind, AnnotationSource
 
 ANNOTATION_MAX_VERTICES = 10_000
 POLYGON_SINGLE_RING = "A polygon must have exactly one exterior ring (holes are not supported)."
@@ -152,9 +152,12 @@ class AnnotationRead(BaseModel):
 
     id: uuid.UUID
     kind: AnnotationKind
+    source: AnnotationSource = AnnotationSource.HUMAN
     cell_type_id: int | None
     geometry: PolygonGeometry
     curve: CurveGeometry | None = None
+    # Username of whoever drew or last changed it; null when nobody has (e.g. an untouched model cell).
+    created_by_name: str | None = None
     created_at: datetime
     # A cell lying wholly inside an excluded area of its hotspot (saved anyway; the client warns).
     inside_excluded: bool = False

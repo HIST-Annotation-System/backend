@@ -1,7 +1,7 @@
 from sqlalchemy.exc import IntegrityError
 
 from app.exceptions.errors import ConflictError, NotFoundError
-from app.models.cell_type import CellType
+from app.models.cell_type import UNCLASSIFIED_CELL_TYPE_NAME, CellType
 from app.repositories.cell_types import CellTypeRepository
 from app.schemas.cell_type import CellTypeCreate, CellTypeRead, CellTypeUpdate
 
@@ -11,6 +11,7 @@ CELL_TYPE_NAME_TAKEN_CODE = "cell_type_name_taken"
 CELL_TYPE_IN_USE = (
     "Cell type {cell_type_id} is linked to existing annotations and cannot be deleted."
 )
+CELL_TYPE_RESERVED = f"The '{UNCLASSIFIED_CELL_TYPE_NAME}' cell type is used by the model and cannot be changed."
 
 
 class CellTypeService:
@@ -31,6 +32,7 @@ class CellTypeService:
 
     def update_cell_type(self, cell_type_id: int, data: CellTypeUpdate) -> CellTypeRead:
         cell_type = self._require(cell_type_id)
+        _require_not_reserved(cell_type)
         # Changing only the letter case of its own name is allowed.
         self._require_unique_name(data.name, except_id=cell_type_id)
         cell_type.name = data.name
@@ -38,6 +40,7 @@ class CellTypeService:
 
     def delete_cell_type(self, cell_type_id: int) -> None:
         cell_type = self._require(cell_type_id)
+        _require_not_reserved(cell_type)
         if self._cell_types.is_linked_to_annotations(cell_type_id):
             raise ConflictError(CELL_TYPE_IN_USE.format(cell_type_id=cell_type_id))
         self._cell_types.delete(cell_type)
@@ -61,6 +64,11 @@ class CellTypeService:
             return self._cell_types.save(cell_type)
         except IntegrityError as exc:
             raise _name_taken(cell_type.name) from exc
+
+
+def _require_not_reserved(cell_type: CellType) -> None:
+    if cell_type.name.lower() == UNCLASSIFIED_CELL_TYPE_NAME.lower():
+        raise ConflictError(CELL_TYPE_RESERVED)
 
 
 def _name_taken(name: str) -> ConflictError:

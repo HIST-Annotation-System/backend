@@ -8,6 +8,7 @@ dependencies = [
     "alembic>=1.19.2",
     "bcrypt>=5.0.0",
     "boto3>=1.43.89",
+    "celery[redis,sqs]>=5.5",
     "fastapi[standard]>=0.141.1",
     "numpy>=2.5.3",
     "openslide-bin>=4.0.1.2",
@@ -33,5 +34,5 @@ strict = true
 plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
-module = ["scipy.*", "shapely.*"]
+module = ["celery.*", "scipy.*", "shapely.*"]
 ignore_missing_imports = true
