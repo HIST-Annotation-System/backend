@@ -30,6 +30,22 @@ services:
       migrate:
         condition: service_completed_successfully
 
+  # Saves the results of the ml-worker stack. Only with `--profile segmentation`: without that stack there is nothing
+  # for it to do. It keeps retrying the broker by itself, so the two stacks can start in any order.
+  segmentation-consumer:
+    build: .
+    profiles: [ "segmentation" ]
+    command: [ "celery", "-A", "app.segmentation_consumer", "worker", "-Q", "segmentation-results", "--pool=solo", "--concurrency=1", "--without-gossip", "--without-mingle", "--without-heartbeat", "--loglevel=INFO" ]
+    env_file: .env.local
+    environment:
+      POSTGRES_SERVER: host.docker.internal
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: on-failure
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
   migrate:
     build: .
     command: [ "alembic", "upgrade", "head" ]

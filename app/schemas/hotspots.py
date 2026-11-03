@@ -6,7 +6,7 @@ from typing import Annotated, Self
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
 from app.core.constants import NAME_MAX_LENGTH, NAME_MIN_LENGTH
-from app.models.hotspot import HotspotBatchStatus, HotspotFeature, HotspotImageType
+from app.models.hotspot import HotspotBatchStatus, HotspotFeature, HotspotImageType, SegmentationStatus
 from app.schemas.tags import TagRead
 
 HOTSPOT_UPDATE_EMPTY = "Provide name, folder_id and/or reannotated."
@@ -125,5 +125,8 @@ class HotspotRead(BaseModel):
     reannotated_at: datetime | None
     # Who set the latest importance/accuracy verdict.
     assessed_by: str | None
+    # Cells annotated by people; untouched model cells don't count.
     annotation_count: int
+    segmentation_status: SegmentationStatus
+    segmentation_error: str | None
     created_at: datetime

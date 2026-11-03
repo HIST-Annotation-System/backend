@@ -148,6 +148,35 @@ that serves Deep Zoom tiles; it lives in the API process, so a restart marks any
 
 Slides are added through the frontend's upload dialog (e.g. `examples/CMU-2.svs`).
 
+## Cell segmentation
+
+Every hotspot, uploaded or cut from a slide, is pre-filled with cell outlines by CellposeSAM. The model runs in the
+separate `ml-worker` repository, whose README has the setup and the contract between the two.
+
+**It is optional.** With `SEGMENTATION_ENABLED=false`, the default, nothing is sent and hotspots stay `pending`, and
+everything else works as usual. To use it on a machine running the `ml-worker` stack, set it to `true` in `.env.local`
+and start with `docker compose --profile segmentation up -d --build`, which adds the consumer that saves results.
+
+| `segmentation_status` | Meaning |
+|---|---|
+| `pending` | Waiting for a worker |
+| `done` | The model's cells are saved |
+| `failed` | The model could not process it (`segmentation_error` says why); not retried automatically |
+| `skipped` | Someone saved a cell by hand first, so model cells would land on top of their work |
+
+How it stays out of the way:
+
+- **No request depends on it.** A background thread in the API (`app/services/segmentation.py`) sends pending hotspots.
+  If Redis is down it logs one warning and tries again; the hotspots just wait.
+- **Lost jobs recover by themselves.** A hotspot still `pending` 30 minutes after being sent goes out again. Jobs expire
+  after the same time, so a stopped worker doesn't come back to a pile of duplicates.
+- **Stacks share the work.** All of them see the same database, and claiming a hotspot locks its row, so two stacks don't
+  send the same one.
+
+Model cells are annotations with `source = model` and the `Unclassified` cell type, which can't be renamed or deleted.
+Editing one makes it `source = human`, credited to the editor. Stats and `annotation_count` only count `human` rows; the
+editor and the GeoJSON export show both. The model's original output stays in `hotspots/{id}/segmentation.json`.
+
 ## API Overview
 
 All endpoints are prefixed with `/api/v1`.
@@ -218,6 +247,8 @@ The main variables are listed in `.env.example`:
 | `BUCKET_ENDPOINT` | S3 regional endpoint; the browser uses the same one, because presigned URLs are signed for it |
 | `BUCKET_ACCESS_KEY`, `BUCKET_SECRET_KEY`, `BUCKET_NAME`, `BUCKET_REGION` | Object storage credentials, bucket and region |
 | `SLIDE_CACHE_DIR` | Directory holding local copies of slides |
+| `SEGMENTATION_ENABLED` | Send hotspots to the `ml-worker` stack; only on a machine running it (see [Cell segmentation](#cell-segmentation)) |
+| `CELERY_BROKER_URL`, `CELERY_BROKER_TRANSPORT_OPTIONS` | The broker shared with `ml-worker`; the default is its Redis as seen from a container |
 
 `docker-compose.yml` loads every service's config straight from `.env.local` via `env_file:`, so
 `docker compose up` needs no `--env-file` flag and can't silently see blank credentials the way

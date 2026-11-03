@@ -34,6 +34,12 @@ class Settings(BaseSettings):
     # Local, re-creatable copies of slides (OpenSlide needs filesystem paths).
     SLIDE_CACHE_DIR: Path = Path(".slide-cache")
 
+    # Off unless this machine runs the ml-worker stack: hotspots then stay `pending` and everything else works.
+    SEGMENTATION_ENABLED: bool = False
+    # Moving to SQS only changes these two (plus AWS credentials); see README.md.
+    CELERY_BROKER_URL: str = "redis://host.docker.internal:6379/0"
+    CELERY_BROKER_TRANSPORT_OPTIONS: dict[str, Any] = {"visibility_timeout": 3600}
+
     JWT_SECRET: str
     JWT_ALGORITHM: str
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
