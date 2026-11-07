@@ -15,6 +15,8 @@ from app.dependencies.services import (
 )
 from app.schemas.annotations import AnnotationCreate, AnnotationRead, AnnotationUpdate
 from app.schemas.hotspots import (
+    BoxFeatures,
+    BoxFeaturesRequest,
     HotspotBatchCreate,
     HotspotBatchRead,
     HotspotFolderRead,
@@ -94,6 +96,12 @@ def create_hotspot_batch(
     if created:
         resources.hotspot_pool.submit(run_hotspot_batch, resources, batch.id)
     return batch
+
+
+@router.post("/hotspot-boxes/features", response_model=list[BoxFeatures])
+def get_box_features(data: BoxFeaturesRequest, service: HotspotServiceDep, _user: CurrentUserDep) -> list[BoxFeatures]:
+    """Image descriptors of slide squares before they are cut out (shown live while choosing them)."""
+    return service.box_features(data)
 
 
 @router.get("/hotspot-batches", response_model=list[HotspotBatchRead])

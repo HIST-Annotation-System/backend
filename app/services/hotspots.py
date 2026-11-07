@@ -1,5 +1,7 @@
 import logging
+import threading
 import uuid
+from collections import OrderedDict
 from collections.abc import Callable, Collection
 from datetime import UTC, datetime, timedelta
 from pathlib import PurePath
@@ -16,6 +18,8 @@ from app.models.tag import TagDimension
 from app.repositories.hotspots import HotspotRepository
 from app.repositories.slides import SlideRepository
 from app.schemas.hotspots import (
+    BoxFeatures,
+    BoxFeaturesRequest,
     HotspotBatchCreate,
     HotspotBatchRead,
     HotspotFolderRead,
@@ -26,7 +30,15 @@ from app.schemas.hotspots import (
     SortOrder,
 )
 from app.services.hotspot_features import compute_features
-from app.services.hotspot_images import EXTENSIONS, MEDIA_TYPES, EncodedImage, decode_upload, encode_captured
+from app.services.hotspot_images import (
+    EXTENSIONS,
+    MEDIA_TYPES,
+    THUMBNAIL_SIZE,
+    EncodedImage,
+    decode_upload,
+    encode_captured,
+    render_thumbnail,
+)
 from app.services.slide_analysis import MEDIA_TYPE_JPEG
 from app.services.slides import SlideService, require_slide
 from app.services.storage import ObjectStorage
@@ -48,6 +60,10 @@ BATCH_INTERRUPTED = "Cutting out the hotspots was interrupted; select the remain
 # Batches run in-process, so one still running long after it started belongs to a crashed process.
 # Every teammate runs an API against the same database: only batches far older than any real one are failed.
 BATCH_STALE_AFTER = timedelta(hours=1)
+# Box descriptors kept per (slide, x, y): a grid drag asks for the same boxes again and again.
+BOX_FEATURES_CACHE_SIZE = 20_000
+_box_features_cache: OrderedDict[tuple[uuid.UUID, int, int], dict[str, float]] = OrderedDict()
+_box_features_lock = threading.Lock()
 # Failed batches stay listed this long, so the user can see what went wrong.
 FAILED_BATCH_LISTED_FOR = timedelta(hours=24)
 
@@ -170,6 +186,32 @@ class HotspotService:
 
     def get_hotspot(self, hotspot_id: uuid.UUID) -> HotspotRead:
         return HotspotRead.model_validate(require_hotspot(self._hotspots, hotspot_id))
+
+    def box_features(self, data: BoxFeaturesRequest) -> list[BoxFeatures]:
+        """Descriptors of slide squares as a hotspot cut from each would get them, without saving anything.
+
+        Read straight at thumbnail size (a lower pyramid level), so the values can differ from the saved hotspot's
+        by a hair; that keeps a whole grid fast enough to show while it is being dragged.
+        """
+        slide = require_slide(self._slides, data.slide_id, ready=True)
+        results: list[BoxFeatures] = []
+        for x, y in dict.fromkeys(data.boxes):
+            if x + HOTSPOT_BOX_SIZE > (slide.width or 0) or y + HOTSPOT_BOX_SIZE > (slide.height or 0):
+                raise InvalidInputError(BOX_OUTSIDE_SLIDE.format(x=x, y=y))
+            key = (slide.id, x, y)
+            with _box_features_lock:
+                features = _box_features_cache.get(key)
+                if features is not None:
+                    _box_features_cache.move_to_end(key)
+            if features is None:
+                square = self._slide_service.read_square(slide.id, x, y, HOTSPOT_BOX_SIZE, THUMBNAIL_SIZE)
+                features = compute_features(render_thumbnail(square))
+                with _box_features_lock:
+                    _box_features_cache[key] = features
+                    while len(_box_features_cache) > BOX_FEATURES_CACHE_SIZE:
+                        _box_features_cache.popitem(last=False)
+            results.append(BoxFeatures(x=x, y=y, features=features))
+        return results
 
     def create_batch(self, data: HotspotBatchCreate) -> tuple[HotspotBatchRead, bool]:
         """The batch, and whether it is new (so it still has to be run); a retried request gets the existing one."""

@@ -77,6 +77,20 @@ class HotspotBatchCreate(BaseModel):
         return self
 
 
+class BoxFeaturesRequest(BaseModel):
+    """Slide squares whose image descriptors to compute before they are cut out (repeated corners are fine)."""
+
+    slide_id: uuid.UUID
+    boxes: list[BoxCorner] = Field(min_length=1, max_length=HOTSPOT_BATCH_MAX_BOXES)
+
+
+class BoxFeatures(BaseModel):
+    x: int
+    y: int
+    # The same descriptors a hotspot cut from this square gets (see app.services.hotspot_features).
+    features: dict[str, float]
+
+
 class HotspotBatchRead(BaseModel):
     id: uuid.UUID
     slide_id: uuid.UUID
