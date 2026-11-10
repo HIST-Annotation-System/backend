@@ -5,11 +5,14 @@ from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, String, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base
+from app.models.organization import Organization
 
 
 class Role(str, enum.Enum):
+    # System administrator: no organization, sees and manages every organization.
     ADMIN = "ADMIN"
     ANNOTATOR = "ANNOTATOR"
+    ORG_ADMIN = "ORG_ADMIN"
 
 
 class Account(Base):
@@ -20,8 +23,13 @@ class Account(Base):
     hashed_password: Mapped[str] = mapped_column(String, nullable=False)
     role: Mapped[Role] = mapped_column(Enum(Role), nullable=False, default=Role.ANNOTATOR)
     is_first_login: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    # Null only for system administrators.
+    organization_id: Mapped[int | None] = mapped_column(
+        ForeignKey("organizations.id", ondelete="RESTRICT"), index=True
+    )
 
     # Relationships
+    organization: Mapped["Organization | None"] = relationship(lazy="joined")
     profile: Mapped["AnnotatorProfile"] = relationship(
         "AnnotatorProfile", back_populates="account", uselist=False, cascade="all, delete-orphan"
     )

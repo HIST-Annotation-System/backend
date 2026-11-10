@@ -70,6 +70,7 @@ class Slide(Base):
     uploaded_by_id: Mapped[int | None] = mapped_column(ForeignKey("accounts.id", ondelete="SET NULL"), index=True)
     # Joined: every slide listing shows the uploader, so it must not cost a query per slide.
     uploaded_by: Mapped["Account | None"] = relationship(lazy="joined")
+    organization_id: Mapped[int] = mapped_column(ForeignKey("organizations.id", ondelete="RESTRICT"), index=True)
 
     @property
     def uploaded_by_name(self) -> str | None:

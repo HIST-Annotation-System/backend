@@ -191,7 +191,10 @@ class SlideService:
         return slide
 
     def _open(self, slide_id: uuid.UUID) -> OpenedSlide:
-        # Cache hits never touch the database (SQLAlchemy sessions connect lazily).
+        # Cache hits never touch the database (SQLAlchemy sessions connect lazily), unless access to the slide has
+        # to be checked: the cache is shared by every organization.
+        if self._slides.organization_id is not None:
+            require_slide(self._slides, slide_id)
         opened = self._handles.get(slide_id)
         if opened is None:
             handle = open_slide_file(self._files.entry_path(require_slide(self._slides, slide_id, ready=True)))

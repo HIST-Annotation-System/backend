@@ -107,6 +107,7 @@ class HotspotAnnotationService:
         return self._read_saved(self._hotspots.save(annotation))
 
     def delete_annotation(self, hotspot_id: uuid.UUID, annotation_id: uuid.UUID) -> None:
+        require_hotspot(self._hotspots, hotspot_id)
         self._hotspots.delete(self._require_annotation(hotspot_id, annotation_id))
 
     def export_geojson(self, hotspot_id: uuid.UUID) -> AnnotationFeatureCollection:

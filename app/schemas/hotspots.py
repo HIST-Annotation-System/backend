@@ -17,8 +17,8 @@ Name = Annotated[str, StringConstraints(strip_whitespace=True, min_length=NAME_M
 
 
 class HotspotSort(enum.StrEnum):
-    """What the catalog is ordered by: creation time, one of the HotspotFeature descriptors, the summed tag
-    weights, or the weight of the importance/accuracy tag."""
+    """What the catalog is ordered by: creation time, one of the HotspotFeature descriptors, the score, the
+    average importance/accuracy of the ratings, or how many annotators rated the hotspot."""
 
     CREATED_AT = "created_at"
     ENTROPY = HotspotFeature.ENTROPY.value
@@ -28,10 +28,11 @@ class HotspotSort(enum.StrEnum):
     SCORE = "score"
     IMPORTANCE = "importance"
     ACCURACY = "accuracy"
+    RATING_COUNT = "rating_count"
 
 
 class HotspotStatus(enum.StrEnum):
-    """Where a hotspot is in the review: tagged means both importance and accuracy are set."""
+    """Where a hotspot is in the review: tagged means its ratings set both importance and accuracy."""
 
     UNTAGGED = "untagged"
     TO_REANNOTATE = "to_reannotate"
@@ -47,11 +48,17 @@ class HotspotFolderWrite(BaseModel):
     name: Name
 
 
+class HotspotFolderCreate(HotspotFolderWrite):
+    # Only the system admin chooses; everyone else creates folders in their own organization.
+    organization_id: int | None = None
+
+
 class HotspotFolderRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
     name: str
+    organization_id: int
     hotspot_count: int
     created_at: datetime
 
@@ -116,7 +123,21 @@ class HotspotUpdate(BaseModel):
         return self
 
 
+class RatingRead(BaseModel):
+    """One annotator's rating of a hotspot (either tag may be unset)."""
+
+    account_id: int
+    username: str
+    full_name: str | None
+    importance: TagRead | None
+    accuracy: TagRead | None
+    updated_at: datetime
+
+
 class HotspotRead(BaseModel):
+    """A hotspot as the requesting user sees it: the group's verdict (core tags, score, `assessed_by`, `ratings`) is
+    hidden from annotators who have not rated it yet, so other people's ratings can't sway theirs."""
+
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
@@ -134,11 +155,19 @@ class HotspotRead(BaseModel):
     mpp: float | None
     # HotspotFeature value -> descriptor; null when it could not be computed (e.g. missing thumbnail).
     features: dict[str, float] | None
-    tags: list[TagRead]
-    score: int
+    # The team's verdict (the core tag nearest to the average rating of each dimension, see
+    # app.services.hotspot_ratings) first, then the custom tags by name.
+    tags: list[TagRead] = []
+    # Custom tag weights plus the rounded average weights of the ratings.
+    score: int = 0
     reannotated_at: datetime | None
-    # Who set the latest importance/accuracy verdict.
-    assessed_by: str | None
+    # Who changed a rating last.
+    assessed_by: str | None = None
+    status: HotspotStatus = HotspotStatus.UNTAGGED
+    rating_count: int = 0
+    my_rating: RatingRead | None = None
+    # Built per viewer by HotspotReader, not read from the model's `ratings`.
+    ratings: list[RatingRead] | None = Field(default=None, validation_alias="visible_ratings")
     # Cells annotated by people; untouched model cells don't count.
     annotation_count: int
     segmentation_status: SegmentationStatus

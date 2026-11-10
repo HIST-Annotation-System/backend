@@ -13,7 +13,6 @@ class AccountRepository:
         return self._session.execute(
             select(Account)
             .options(
-                joinedload(Account.profile).joinedload(AnnotatorProfile.group),
                 joinedload(Account.profile).joinedload(AnnotatorProfile.categories),
             )
             .where(Account.username == username)
@@ -23,23 +22,22 @@ class AccountRepository:
         return self._session.execute(
             select(Account)
             .options(
-                joinedload(Account.profile).joinedload(AnnotatorProfile.group),
                 joinedload(Account.profile).joinedload(AnnotatorProfile.categories),
             )
             .where(Account.id == account_id)
         ).unique().scalar_one_or_none()
 
-    def get_all(self) -> list[Account]:
-        return list(
-            self._session.execute(
-                select(Account)
-                .options(
-                    joinedload(Account.profile).joinedload(AnnotatorProfile.group),
-                    joinedload(Account.profile).joinedload(AnnotatorProfile.categories),
-                )
-                .order_by(Account.username)
-            ).scalars().unique().all()
+    def get_all(self, organization_id: int | None = None) -> list[Account]:
+        statement = (
+            select(Account)
+            .options(
+                joinedload(Account.profile).joinedload(AnnotatorProfile.categories),
+            )
+            .order_by(Account.username)
         )
+        if organization_id is not None:
+            statement = statement.where(Account.organization_id == organization_id)
+        return list(self._session.execute(statement).scalars().unique().all())
 
     def create(self, account: Account) -> Account:
         self._session.add(account)

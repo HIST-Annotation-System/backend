@@ -2,7 +2,7 @@ import logging
 import threading
 import uuid
 from collections import OrderedDict
-from collections.abc import Callable, Collection
+from collections.abc import Collection
 from datetime import UTC, datetime, timedelta
 from pathlib import PurePath
 
@@ -14,9 +14,9 @@ from app.exceptions.errors import AppError, ConflictError, InvalidInputError, No
 from app.models.account import Account
 from app.models.hotspot import Hotspot, HotspotBatch, HotspotBatchStatus, HotspotFeature, HotspotFolder
 from app.models.slide import Slide
-from app.models.tag import TagDimension
 from app.repositories.hotspots import HotspotRepository
 from app.repositories.slides import SlideRepository
+from app.repositories.tags import TagRepository
 from app.schemas.hotspots import (
     BoxFeatures,
     BoxFeaturesRequest,
@@ -30,6 +30,7 @@ from app.schemas.hotspots import (
     SortOrder,
 )
 from app.services.hotspot_features import compute_features
+from app.services.hotspot_ratings import HotspotReader, hotspot_status
 from app.services.hotspot_images import (
     EXTENSIONS,
     MEDIA_TYPES,
@@ -54,6 +55,7 @@ FOLDER_NOT_FOUND = "Hotspot folder {folder_id} does not exist."
 FOLDER_NAME_TAKEN = "A hotspot folder named '{name}' already exists."
 HOTSPOT_NOT_FOUND = "Hotspot {hotspot_id} does not exist."
 BATCH_NOT_FOUND = "Hotspot batch {batch_id} does not exist."
+OTHER_ORGANIZATION_FOLDER = "The folder belongs to another organization."
 BOX_OUTSIDE_SLIDE = "The box at ({x}, {y}) does not lie wholly inside the slide."
 BATCH_FAILED = "Unexpected error while cutting out the hotspots."
 BATCH_INTERRUPTED = "Cutting out the hotspots was interrupted; select the remaining boxes again."
@@ -77,27 +79,8 @@ def require_hotspot(hotspots: HotspotRepository, hotspot_id: uuid.UUID) -> Hotsp
     return hotspot
 
 
-def _status(hotspot: Hotspot) -> HotspotStatus:
-    if hotspot.reannotated_at is not None:
-        return HotspotStatus.REANNOTATED
-    if any(hotspot.dimension_tag(dimension) is None for dimension in TagDimension):
-        return HotspotStatus.UNTAGGED
-    return HotspotStatus.TO_REANNOTATE
-
-
-def _sort_key(sort: HotspotSort) -> Callable[[Hotspot], float | None]:
-    """The value a hotspot is sorted by; None when it has none (no such tag, or a feature not computed)."""
-    if sort == HotspotSort.SCORE:
-        return lambda hotspot: hotspot.score
-    if sort in (HotspotSort.IMPORTANCE, HotspotSort.ACCURACY):
-        dimension = TagDimension(sort.value)
-
-        def tag_weight(hotspot: Hotspot) -> float | None:
-            tag = hotspot.dimension_tag(dimension)
-            return None if tag is None else tag.weight
-
-        return tag_weight
-    return lambda hotspot: (hotspot.features or {}).get(sort.value)
+# Sorted by the ratings (as the viewer may see them); every other sort is an image feature.
+RATING_SORTS = (HotspotSort.SCORE, HotspotSort.IMPORTANCE, HotspotSort.ACCURACY, HotspotSort.RATING_COUNT)
 
 
 def fail_interrupted_batches(session_factory: sessionmaker[Session], now: datetime | None = None) -> None:
@@ -123,7 +106,9 @@ class HotspotService:
         slides: SlideRepository,
         slide_service: SlideService,
         storage: ObjectStorage,
+        tags: TagRepository,
     ) -> None:
+        self._tags = tags
         self._hotspots = hotspots
         self._slides = slides
         self._slide_service = slide_service
@@ -134,15 +119,15 @@ class HotspotService:
             self._folder_read(folder, count) for folder, count in self._hotspots.list_folders_with_counts()
         ]
 
-    def create_folder(self, name: str) -> HotspotFolderRead:
-        self._require_free_name(name)
-        folder = self._save_folder(HotspotFolder(name=name))
+    def create_folder(self, name: str, organization_id: int) -> HotspotFolderRead:
+        self._require_free_name(name, organization_id)
+        folder = self._save_folder(HotspotFolder(name=name, organization_id=organization_id))
         return self._folder_read(folder, 0)
 
     def rename_folder(self, folder_id: uuid.UUID, name: str) -> HotspotFolderRead:
         folder = self._require_folder(folder_id)
         if name != folder.name:
-            self._require_free_name(name)
+            self._require_free_name(name, folder.organization_id)
             folder.name = name
             folder = self._save_folder(folder)
         return self._folder_read(folder, self._hotspots.count_in_folder(folder_id))
@@ -154,6 +139,9 @@ class HotspotService:
         for hotspot_id in hotspot_ids:
             self._storage.delete_prefix(HOTSPOT_OBJECTS_PREFIX.format(hotspot_id=hotspot_id))
 
+    def reader(self, viewer: Account | None) -> HotspotReader:
+        return HotspotReader(self._tags.list_all(), viewer)
+
     def list_hotspots(
         self,
         folder_id: uuid.UUID | None,
@@ -162,19 +150,31 @@ class HotspotService:
         slide_id: uuid.UUID | None = None,
         status: HotspotStatus | None = None,
         tag_ids: Collection[int] = (),
+        viewer: Account | None = None,
+        rating_count: int | None = None,
+        rated_by_me: bool | None = None,
     ) -> list[HotspotRead]:
-        """Hotspots in the review `status` that carry all `tag_ids`, ordered by creation time, an image feature
-        or their tags (ties and missing values: newest first; hotspots without a value always come last).
+        """Hotspots in the review `status` that carry all `tag_ids` (as `viewer` sees them), with exactly
+        `rating_count` ratings and (not) fully rated by `viewer` (`rated_by_me`), when given; ordered by creation time, an image feature, the ratings or their count (ties and
+        missing values: newest first; hotspots without a value always come last).
         """
+        reader = self.reader(viewer)
         hotspots = [
             hotspot
             for hotspot in self._hotspots.list_hotspots(folder_id, slide_id)  # newest first
-            if (status is None or _status(hotspot) == status)
-            and set(tag_ids) <= {link.tag_id for link in hotspot.tag_links}
+            if (status is None or hotspot_status(hotspot) == status)
+            and (rating_count is None or len(hotspot.ratings) == rating_count)
+            and (rated_by_me is None or reader.rated_by_viewer(hotspot) == rated_by_me)
+            and set(tag_ids) <= {tag.id for tag in reader.visible_tags(hotspot)}
         ]
         self._fill_missing_features(hotspots)
         if sort != HotspotSort.CREATED_AT:
-            key = _sort_key(sort)
+
+            def key(hotspot: Hotspot) -> float | None:
+                if sort in RATING_SORTS:
+                    return reader.sort_value(hotspot, sort)
+                return (hotspot.features or {}).get(sort.value)
+
             known = [hotspot for hotspot in hotspots if key(hotspot) is not None]
             unknown = [hotspot for hotspot in hotspots if key(hotspot) is None]
             # A stable sort keeps the newest-first order among equal values.
@@ -182,10 +182,10 @@ class HotspotService:
             hotspots = known + unknown
         elif order == SortOrder.ASC:
             hotspots.reverse()
-        return [HotspotRead.model_validate(item) for item in hotspots]
+        return [reader.read(item) for item in hotspots]
 
-    def get_hotspot(self, hotspot_id: uuid.UUID) -> HotspotRead:
-        return HotspotRead.model_validate(require_hotspot(self._hotspots, hotspot_id))
+    def get_hotspot(self, hotspot_id: uuid.UUID, viewer: Account | None = None) -> HotspotRead:
+        return self.reader(viewer).read(require_hotspot(self._hotspots, hotspot_id))
 
     def box_features(self, data: BoxFeaturesRequest) -> list[BoxFeatures]:
         """Descriptors of slide squares as a hotspot cut from each would get them, without saving anything.
@@ -219,7 +219,8 @@ class HotspotService:
         if existing is not None:
             return self._batch_read(existing), False
         slide = require_slide(self._slides, data.slide_id, ready=True)
-        self._require_folder(data.folder_id)
+        if self._require_folder(data.folder_id).organization_id != slide.organization_id:
+            raise InvalidInputError(OTHER_ORGANIZATION_FOLDER)
         for x, y in data.boxes:
             if x + HOTSPOT_BOX_SIZE > (slide.width or 0) or y + HOTSPOT_BOX_SIZE > (slide.height or 0):
                 raise InvalidInputError(BOX_OUTSIDE_SLIDE.format(x=x, y=y))
@@ -285,8 +286,10 @@ class HotspotService:
 
     def update_hotspot(self, hotspot_id: uuid.UUID, data: HotspotUpdate, user: Account) -> HotspotRead:
         hotspot = require_hotspot(self._hotspots, hotspot_id)
-        if data.folder_id is not None:
-            self._require_folder(data.folder_id)
+        if data.folder_id is not None and data.folder_id != hotspot.folder_id:
+            target = self._require_folder(data.folder_id)
+            if target.organization_id != self._require_folder(hotspot.folder_id).organization_id:
+                raise InvalidInputError(OTHER_ORGANIZATION_FOLDER)
             hotspot.folder_id = data.folder_id
         if data.name is not None:
             hotspot.name = data.name
@@ -294,7 +297,7 @@ class HotspotService:
             hotspot.reannotated_at, hotspot.reannotated_by_id = None, None
         elif data.reannotated and hotspot.reannotated_at is None:
             hotspot.reannotated_at, hotspot.reannotated_by_id = datetime.now(UTC), user.id
-        return HotspotRead.model_validate(self._hotspots.save(hotspot))
+        return self.reader(user).read(self._hotspots.save(hotspot))
 
     def delete_hotspot(self, hotspot_id: uuid.UUID) -> None:
         self._hotspots.delete(require_hotspot(self._hotspots, hotspot_id))
@@ -352,7 +355,7 @@ class HotspotService:
         self._storage.put_bytes(image_key, image.data, MEDIA_TYPES[image.image_type])
         self._storage.put_bytes(HOTSPOT_THUMBNAIL_KEY.format(hotspot_id=hotspot.id), image.thumbnail, MEDIA_TYPE_JPEG)
         try:
-            return HotspotRead.model_validate(self._hotspots.save(hotspot))
+            return self.reader(None).read(self._hotspots.save(hotspot))
         except Exception:
             self._storage.delete_prefix(HOTSPOT_OBJECTS_PREFIX.format(hotspot_id=hotspot.id))
             raise
@@ -373,7 +376,11 @@ class HotspotService:
 
     def _folder_read(self, folder: HotspotFolder, hotspot_count: int) -> HotspotFolderRead:
         return HotspotFolderRead(
-            id=folder.id, name=folder.name, hotspot_count=hotspot_count, created_at=folder.created_at
+            id=folder.id,
+            name=folder.name,
+            organization_id=folder.organization_id,
+            hotspot_count=hotspot_count,
+            created_at=folder.created_at,
         )
 
     def _require_folder(self, folder_id: uuid.UUID) -> HotspotFolder:
@@ -382,8 +389,8 @@ class HotspotService:
             raise NotFoundError(FOLDER_NOT_FOUND.format(folder_id=folder_id))
         return folder
 
-    def _require_free_name(self, name: str) -> None:
-        if self._hotspots.get_folder_by_name(name) is not None:
+    def _require_free_name(self, name: str, organization_id: int) -> None:
+        if self._hotspots.get_folder_by_name(name, organization_id) is not None:
             raise ConflictError(FOLDER_NAME_TAKEN.format(name=name))
 
     def _save_folder(self, folder: HotspotFolder) -> HotspotFolder:

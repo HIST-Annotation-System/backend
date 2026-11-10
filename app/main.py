@@ -11,7 +11,19 @@ from app.exceptions.errors import register_exception_handlers
 from app.middleware.request_logging import RequestLoggingMiddleware
 from app.services.hotspots import fail_interrupted_batches
 from app.services.slide_ingest import fail_interrupted_ingests
-from app.routers import auth, categories, cell_types, groups, hotspots, slides, stats, storage, tags, upload, users
+from app.routers import (
+    auth,
+    categories,
+    cell_types,
+    hotspots,
+    organizations,
+    slides,
+    stats,
+    storage,
+    tags,
+    upload,
+    users,
+)
 
 configure_logging(settings.LOG_LEVEL)
 
@@ -48,9 +60,11 @@ def create_app() -> FastAPI:
     register_exception_handlers(app)
 
     app.include_router(auth.router, prefix=f"{settings.API_V1_STR}/auth", tags=["Auth"])
+    app.include_router(
+        organizations.router, prefix=f"{settings.API_V1_STR}/organizations", tags=["Organizations"]
+    )
     app.include_router(users.router, prefix=f"{settings.API_V1_STR}/users", tags=["Users"])
     app.include_router(categories.router, prefix=f"{settings.API_V1_STR}/categories", tags=["Categories"])
-    app.include_router(groups.router, prefix=f"{settings.API_V1_STR}/groups", tags=["Groups"])
     app.include_router(upload.router, prefix=f"{settings.API_V1_STR}/upload", tags=["Upload"])
     app.include_router(slides.router, prefix=f"{settings.API_V1_STR}/slides", tags=["Slides"])
     app.include_router(storage.router, prefix=f"{settings.API_V1_STR}/storage", tags=["Storage"])

@@ -60,11 +60,11 @@ CurrentUserDep = Annotated[Account, Depends(get_current_user)]
 
 
 class RequireRole:
-    def __init__(self, role: Role):
-        self._role = role
+    def __init__(self, *roles: Role):
+        self._roles = roles
 
     def __call__(self, current_user: CurrentUserDep) -> Account:
-        if current_user.role != self._role:
+        if current_user.role not in self._roles:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Not enough privileges"
@@ -74,3 +74,17 @@ class RequireRole:
 
 require_admin = RequireRole(Role.ADMIN)
 AdminDep = Annotated[Account, Depends(require_admin)]
+require_manager = RequireRole(Role.ADMIN, Role.ORG_ADMIN)
+ManagerDep = Annotated[Account, Depends(require_manager)]
+
+
+def get_org_scope(current_user: CurrentUserDep) -> int | None:
+    """The only organization whose data the user may see, or None for the system admin (sees all of them)."""
+    if current_user.role == Role.ADMIN:
+        return None
+    if current_user.organization_id is None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account has no organization")
+    return current_user.organization_id
+
+
+OrgScopeDep = Annotated[int | None, Depends(get_org_scope)]

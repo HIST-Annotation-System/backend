@@ -1,8 +1,9 @@
 import uuid
 from collections.abc import Sequence
 from datetime import datetime
+from typing import Any
 
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import Select, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from app.models.hotspot import (
@@ -18,21 +19,39 @@ from app.models.hotspot import (
 
 
 class HotspotRepository:
-    """Hotspot folders, hotspots, hotspot annotations and hotspot batches."""
+    """Hotspot folders, hotspots, hotspot annotations and hotspot batches.
 
-    def __init__(self, session: Session) -> None:
+    `organization_id` limits folders, and the hotspots and batches in them, to that organization (None: all).
+    Annotations are reached through their hotspot, so callers check the hotspot first.
+    """
+
+    def __init__(self, session: Session, organization_id: int | None = None) -> None:
         self._session = session
+        self.organization_id = organization_id
+
+    def _in_scope(self, folder: HotspotFolder | None) -> bool:
+        return folder is not None and (self.organization_id is None or folder.organization_id == self.organization_id)
+
+    def _scoped[T: Any](self, statement: Select[T], folder_id: Any) -> Select[T]:
+        """`statement` limited to rows whose folder (the `folder_id` column) is in scope."""
+        if self.organization_id is None:
+            return statement
+        in_scope = select(HotspotFolder.id).where(HotspotFolder.organization_id == self.organization_id)
+        return statement.where(folder_id.in_(in_scope))
 
     def get_folder(self, folder_id: uuid.UUID) -> HotspotFolder | None:
-        return self._session.get(HotspotFolder, folder_id)
+        folder = self._session.get(HotspotFolder, folder_id)
+        return folder if self._in_scope(folder) else None
 
-    def get_folder_by_name(self, name: str) -> HotspotFolder | None:
-        return self._session.scalars(select(HotspotFolder).where(HotspotFolder.name == name)).first()
+    def get_folder_by_name(self, name: str, organization_id: int) -> HotspotFolder | None:
+        return self._session.scalars(
+            select(HotspotFolder).where(HotspotFolder.organization_id == organization_id, HotspotFolder.name == name)
+        ).first()
 
     def list_folders_with_counts(self) -> Sequence[tuple[HotspotFolder, int]]:
         count = func.count(Hotspot.id)
         statement = (
-            select(HotspotFolder, count)
+            self._scoped(select(HotspotFolder, count), HotspotFolder.id)
             .outerjoin(Hotspot, Hotspot.folder_id == HotspotFolder.id)
             .group_by(HotspotFolder.id)
             .order_by(HotspotFolder.name)
@@ -43,7 +62,10 @@ class HotspotRepository:
         return self._session.scalar(select(func.count(Hotspot.id)).where(Hotspot.folder_id == folder_id)) or 0
 
     def get(self, hotspot_id: uuid.UUID) -> Hotspot | None:
-        return self._session.get(Hotspot, hotspot_id)
+        hotspot = self._session.get(Hotspot, hotspot_id)
+        if hotspot is None or self.organization_id is None:
+            return hotspot
+        return hotspot if self._in_scope(self._session.get(HotspotFolder, hotspot.folder_id)) else None
 
     def get_for_update(self, hotspot_id: uuid.UUID) -> Hotspot | None:
         """The hotspot with its row locked until the next commit or rollback."""
@@ -87,7 +109,7 @@ class HotspotRepository:
     def list_hotspots(
         self, folder_id: uuid.UUID | None = None, slide_id: uuid.UUID | None = None
     ) -> Sequence[Hotspot]:
-        statement = select(Hotspot).order_by(Hotspot.created_at.desc())
+        statement = self._scoped(select(Hotspot), Hotspot.folder_id).order_by(Hotspot.created_at.desc())
         if folder_id is not None:
             statement = statement.where(Hotspot.folder_id == folder_id)
         if slide_id is not None:
@@ -95,15 +117,18 @@ class HotspotRepository:
         return self._session.scalars(statement).all()
 
     def list_by_ids(self, hotspot_ids: Sequence[uuid.UUID]) -> Sequence[Hotspot]:
-        return self._session.scalars(select(Hotspot).where(Hotspot.id.in_(hotspot_ids))).all()
+        return self._session.scalars(
+            self._scoped(select(Hotspot), Hotspot.folder_id).where(Hotspot.id.in_(hotspot_ids))
+        ).all()
 
     def get_batch(self, batch_id: uuid.UUID) -> HotspotBatch | None:
-        return self._session.get(HotspotBatch, batch_id)
+        batch = self._session.get(HotspotBatch, batch_id)
+        return batch if batch is not None and self._in_scope(batch.folder) else None
 
     def list_batches(self, failed_since: datetime) -> Sequence[HotspotBatch]:
         """Running batches, and those that failed after `failed_since`; newest first."""
         return self._session.scalars(
-            select(HotspotBatch)
+            self._scoped(select(HotspotBatch), HotspotBatch.folder_id)
             .where(
                 or_(
                     HotspotBatch.status == HotspotBatchStatus.RUNNING,
