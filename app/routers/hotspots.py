@@ -5,10 +5,11 @@ from fastapi import APIRouter, Query, Response, UploadFile, status
 from fastapi.responses import JSONResponse
 
 from app.core.constants import CONTENT_DISPOSITION_ATTACHMENT, MEDIA_TYPE_GEOJSON
-from app.dependencies.auth import CurrentUserDep
+from app.dependencies.auth import CurrentUserDep, ManagerDep
 from app.dependencies.resources import ResourcesDep
 from app.dependencies.services import (
     HotspotAnnotationServiceDep,
+    HotspotReannotationServiceDep,
     HotspotServiceDep,
     OrganizationServiceDep,
     TagServiceDep,
@@ -29,6 +30,7 @@ from app.schemas.hotspots import (
     HotspotUpdate,
     SortOrder,
 )
+from app.schemas.reannotation import AgreementRead, AgreementSettings
 from app.schemas.tags import HotspotTagsBulk
 from app.services.hotspot_images import UPLOAD_MAX_BYTES
 from app.services.slide_analysis import MEDIA_TYPE_JPEG
@@ -178,8 +180,10 @@ def get_hotspot_thumbnail(hotspot_id: uuid.UUID, service: HotspotServiceDep) -> 
 
 
 @router.get("/hotspots/{hotspot_id}/annotations", response_model=list[AnnotationRead])
-def list_hotspot_annotations(hotspot_id: uuid.UUID, service: HotspotAnnotationServiceDep) -> list[AnnotationRead]:
-    return service.list_annotations(hotspot_id)
+def list_hotspot_annotations(
+    hotspot_id: uuid.UUID, service: HotspotAnnotationServiceDep, user: CurrentUserDep
+) -> list[AnnotationRead]:
+    return service.list_annotations(hotspot_id, user)
 
 
 @router.get("/hotspots/{hotspot_id}/annotations/export")
@@ -214,6 +218,58 @@ def update_hotspot_annotation(
 
 @router.delete("/hotspots/{hotspot_id}/annotations/{annotation_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_hotspot_annotation(
-    hotspot_id: uuid.UUID, annotation_id: uuid.UUID, service: HotspotAnnotationServiceDep
+    hotspot_id: uuid.UUID, annotation_id: uuid.UUID, service: HotspotAnnotationServiceDep, user: CurrentUserDep
 ) -> None:
-    service.delete_annotation(hotspot_id, annotation_id)
+    service.delete_annotation(hotspot_id, annotation_id, user)
+
+
+@router.get("/hotspots/{hotspot_id}/agreement", response_model=AgreementRead)
+def get_hotspot_agreement(
+    hotspot_id: uuid.UUID, service: HotspotReannotationServiceDep, user: CurrentUserDep
+) -> AgreementRead:
+    """How the annotators who confirmed agree; each one's figures only for administrators."""
+    return service.get(hotspot_id, user)
+
+
+@router.post("/hotspots/{hotspot_id}/reannotation", response_model=AgreementRead)
+def start_hotspot_reannotation(
+    hotspot_id: uuid.UUID, service: HotspotReannotationServiceDep, user: CurrentUserDep
+) -> AgreementRead:
+    """The user's own layer, copied from the model's cells (409 while the model is still segmenting)."""
+    return service.start(hotspot_id, user)
+
+
+@router.put("/hotspots/{hotspot_id}/reannotation/confirmation", response_model=AgreementRead)
+def confirm_hotspot_reannotation(
+    hotspot_id: uuid.UUID, service: HotspotReannotationServiceDep, user: CurrentUserDep
+) -> AgreementRead:
+    return service.confirm(hotspot_id, user)
+
+
+@router.delete("/hotspots/{hotspot_id}/reannotation/confirmation", response_model=AgreementRead)
+def unconfirm_hotspot_reannotation(
+    hotspot_id: uuid.UUID, service: HotspotReannotationServiceDep, user: CurrentUserDep
+) -> AgreementRead:
+    return service.unconfirm(hotspot_id, user)
+
+
+@router.get("/agreement-settings", response_model=AgreementSettings)
+def get_agreement_settings(
+    service: HotspotReannotationServiceDep,
+    user: ManagerDep,
+    organizations: OrganizationServiceDep,
+    organization_id: int | None = None,
+) -> AgreementSettings:
+    return service.get_settings(organizations.target_for(user, organization_id))
+
+
+@router.put("/agreement-settings", response_model=AgreementSettings)
+def update_agreement_settings(
+    data: AgreementSettings,
+    service: HotspotReannotationServiceDep,
+    user: ManagerDep,
+    organizations: OrganizationServiceDep,
+    organization_id: int | None = None,
+) -> AgreementSettings:
+    """Which figure the threshold applies to, and how high it is; the organization's hotspots are judged again."""
+    return service.update_settings(organizations.target_for(user, organization_id), data)

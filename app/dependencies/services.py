@@ -15,6 +15,7 @@ from app.repositories.stats import StatsRepository
 from app.repositories.tags import TagRepository
 from app.services.cell_types import CellTypeService
 from app.services.hotspot_annotations import HotspotAnnotationService
+from app.services.hotspot_reannotation import HotspotReannotationService
 from app.services.hotspots import HotspotService
 from app.services.organizations import OrganizationService
 from app.services.slide_files import SlideFileService
@@ -78,6 +79,10 @@ def get_hotspot_annotation_service(session: SessionDep, scope: OrgScopeDep) -> H
     return HotspotAnnotationService(HotspotRepository(session, scope), CellTypeRepository(session))
 
 
+def get_hotspot_reannotation_service(session: SessionDep, scope: OrgScopeDep) -> HotspotReannotationService:
+    return HotspotReannotationService(HotspotRepository(session, scope), OrganizationRepository(session))
+
+
 def get_tag_service(session: SessionDep, scope: OrgScopeDep) -> TagService:
     return TagService(TagRepository(session), HotspotRepository(session, scope))
 
@@ -100,6 +105,9 @@ SlideIngestServiceDep = Annotated[SlideIngestService, Depends(get_slide_ingest_s
 CellTypeServiceDep = Annotated[CellTypeService, Depends(get_cell_type_service)]
 HotspotServiceDep = Annotated[HotspotService, Depends(get_hotspot_service)]
 HotspotAnnotationServiceDep = Annotated[HotspotAnnotationService, Depends(get_hotspot_annotation_service)]
+HotspotReannotationServiceDep = Annotated[
+    HotspotReannotationService, Depends(get_hotspot_reannotation_service)
+]
 TagServiceDep = Annotated[TagService, Depends(get_tag_service)]
 StatsServiceDep = Annotated[StatsService, Depends(get_stats_service)]
 OrganizationServiceDep = Annotated[OrganizationService, Depends(get_organization_service)]

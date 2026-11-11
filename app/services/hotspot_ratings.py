@@ -15,6 +15,7 @@ from app.models.hotspot import Hotspot
 from app.models.tag import HotspotRating, Tag, TagDimension
 from app.schemas.hotspots import HotspotRead, HotspotSort, HotspotStatus, RatingRead
 from app.schemas.tags import TagRead
+from app.services.reannotation_read import full_name_of, summary_of
 
 # They see every rating and the team of every hotspot.
 RATING_MANAGER_ROLES = (Role.ADMIN, Role.ORG_ADMIN)
@@ -55,12 +56,10 @@ def hotspot_status(hotspot: Hotspot) -> HotspotStatus:
 
 
 def _rating_read(rating: HotspotRating) -> RatingRead:
-    profile = rating.account.profile
-    full_name = " ".join(part for part in (profile.first_name, profile.last_name) if part) if profile else ""
     return RatingRead(
         account_id=rating.account_id,
         username=rating.account.username,
-        full_name=full_name or None,
+        full_name=full_name_of(rating.account),
         importance=TagRead.model_validate(rating.importance_tag) if rating.importance_tag else None,
         accuracy=TagRead.model_validate(rating.accuracy_tag) if rating.accuracy_tag else None,
         updated_at=rating.updated_at,
@@ -116,6 +115,7 @@ class HotspotReader:
                 "assessed_by": latest.account.username if sees_team and latest is not None else None,
                 "status": hotspot_status(hotspot),
                 "rating_count": len(hotspot.ratings),
+                "reannotation": summary_of(hotspot, self._viewer),
                 "my_rating": _rating_read(own) if own is not None else None,
                 "ratings": (
                     [_rating_read(rating) for rating in sorted(hotspot.ratings, key=lambda r: r.created_at)]

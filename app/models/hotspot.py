@@ -3,12 +3,13 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import DateTime, Enum, ForeignKey, String, Text, UniqueConstraint, func, select
+from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, String, Text, UniqueConstraint, func, select, true
 from sqlalchemy.orm import Mapped, column_property, mapped_column, relationship
 
 if TYPE_CHECKING:
     from app.models.account import Account
     from app.models.cell_type import CellType
+    from app.models.reannotation import HotspotAgreement, HotspotReannotation
     from app.models.tag import HotspotRating, HotspotTag, Tag
 
 from app.core.constants import NAME_MAX_LENGTH
@@ -104,6 +105,10 @@ class Hotspot(Base):
     # Who marked it reannotated; null while it is not, for marks made before this was recorded, and once that
     # account is deleted.
     reannotated_by_id: Mapped[int | None] = mapped_column(ForeignKey("accounts.id", ondelete="SET NULL"), index=True)
+    # Reannotated one layer per annotator, with the verdict derived from their agreement (see
+    # app.services.hotspot_reannotation). False for hotspots annotated in the old shared way: they keep their pool and
+    # their manual mark.
+    layered: Mapped[bool] = mapped_column(Boolean, default=True, server_default=true())
     segmentation_status: Mapped[SegmentationStatus] = mapped_column(
         Enum(
             SegmentationStatus,
@@ -127,6 +132,12 @@ class Hotspot(Base):
         lazy="selectin", cascade="all, delete-orphan", passive_deletes=True
     )
     ratings: Mapped[list["HotspotRating"]] = relationship(
+        lazy="selectin", cascade="all, delete-orphan", passive_deletes=True
+    )
+    reannotations: Mapped[list["HotspotReannotation"]] = relationship(
+        lazy="selectin", cascade="all, delete-orphan", passive_deletes=True
+    )
+    agreement: Mapped["HotspotAgreement | None"] = relationship(
         lazy="selectin", cascade="all, delete-orphan", passive_deletes=True
     )
 
@@ -198,6 +209,11 @@ class HotspotAnnotation(Base):
     geometry: Mapped[dict[str, Any]] = mapped_column(JsonType)
     # Bézier path the polygon was drawn as (same pixels); NULL for plain polygons.
     curve: Mapped[dict[str, Any] | None] = mapped_column(NullableJsonType, nullable=True)
+    # The model cell this one was copied from when its author started reannotating; null for the model's own cells
+    # and for shapes drawn from scratch.
+    origin_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("hotspot_annotations.id", ondelete="SET NULL"), index=True
+    )
     # Who drew or last changed it; null for untouched model cells, annotations drawn before this was recorded, and
     # once that account is deleted.
     created_by_id: Mapped[int | None] = mapped_column(ForeignKey("accounts.id", ondelete="SET NULL"), index=True)

@@ -56,6 +56,7 @@ FOLDER_NAME_TAKEN = "A hotspot folder named '{name}' already exists."
 HOTSPOT_NOT_FOUND = "Hotspot {hotspot_id} does not exist."
 BATCH_NOT_FOUND = "Hotspot batch {batch_id} does not exist."
 OTHER_ORGANIZATION_FOLDER = "The folder belongs to another organization."
+LAYERED_REANNOTATION = "This hotspot is reannotated in layers: it is fully reannotated once enough annotators agree."
 BOX_OUTSIDE_SLIDE = "The box at ({x}, {y}) does not lie wholly inside the slide."
 BATCH_FAILED = "Unexpected error while cutting out the hotspots."
 BATCH_INTERRUPTED = "Cutting out the hotspots was interrupted; select the remaining boxes again."
@@ -293,6 +294,8 @@ class HotspotService:
             hotspot.folder_id = data.folder_id
         if data.name is not None:
             hotspot.name = data.name
+        if data.reannotated is not None and hotspot.layered:
+            raise InvalidInputError(LAYERED_REANNOTATION)
         if data.reannotated is False:
             hotspot.reannotated_at, hotspot.reannotated_by_id = None, None
         elif data.reannotated and hotspot.reannotated_at is None:

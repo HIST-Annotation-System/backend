@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_vali
 
 from app.core.constants import NAME_MAX_LENGTH, NAME_MIN_LENGTH
 from app.models.hotspot import HotspotBatchStatus, HotspotFeature, HotspotImageType, SegmentationStatus
+from app.schemas.reannotation import ReannotationSummary
 from app.schemas.tags import TagRead
 
 HOTSPOT_UPDATE_EMPTY = "Provide name, folder_id and/or reannotated."
@@ -165,6 +166,8 @@ class HotspotRead(BaseModel):
     assessed_by: str | None = None
     status: HotspotStatus = HotspotStatus.UNTAGGED
     rating_count: int = 0
+    # Built per viewer by HotspotReader.
+    reannotation: ReannotationSummary = ReannotationSummary()
     my_rating: RatingRead | None = None
     # Built per viewer by HotspotReader, not read from the model's `ratings`.
     ratings: list[RatingRead] | None = Field(default=None, validation_alias="visible_ratings")

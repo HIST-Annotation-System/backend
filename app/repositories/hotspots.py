@@ -16,6 +16,7 @@ from app.models.hotspot import (
     HotspotImageType,
     SegmentationStatus,
 )
+from app.models.reannotation import HotspotAgreement
 
 
 class HotspotRepository:
@@ -116,6 +117,15 @@ class HotspotRepository:
             statement = statement.where(Hotspot.slide_id == slide_id)
         return self._session.scalars(statement).all()
 
+    def list_judged(self, organization_id: int) -> Sequence[Hotspot]:
+        """The organization's hotspots that have an agreement on record."""
+        in_organization = select(HotspotFolder.id).where(HotspotFolder.organization_id == organization_id)
+        return self._session.scalars(
+            select(Hotspot)
+            .join(HotspotAgreement, HotspotAgreement.hotspot_id == Hotspot.id)
+            .where(Hotspot.folder_id.in_(in_organization))
+        ).all()
+
     def list_by_ids(self, hotspot_ids: Sequence[uuid.UUID]) -> Sequence[Hotspot]:
         return self._session.scalars(
             self._scoped(select(Hotspot), Hotspot.folder_id).where(Hotspot.id.in_(hotspot_ids))
@@ -172,9 +182,13 @@ class HotspotRepository:
             raise
         return entity
 
-    def save_all(self, entities: Sequence[Hotspot | HotspotBatch]) -> None:
+    def save_all(self, entities: Sequence[Hotspot | HotspotBatch | HotspotAnnotation]) -> None:
         self._session.add_all(entities)
-        self._session.commit()
+        try:
+            self._session.commit()
+        except Exception:
+            self._session.rollback()
+            raise
 
     def save_merged(self, kept: HotspotAnnotation, absorbed: Sequence[HotspotAnnotation]) -> HotspotAnnotation:
         """Stores a merged annotation and deletes the ones merged into it, in one transaction."""

@@ -1,9 +1,10 @@
 import uuid
 from typing import Any
 
-from app.exceptions.errors import ConflictError, InvalidInputError, NotFoundError
+from app.exceptions.errors import ConflictError, ForbiddenError, InvalidInputError, NotFoundError
 from app.models.account import Account
 from app.models.hotspot import AnnotationKind, AnnotationSource, Hotspot, HotspotAnnotation
+from app.models.reannotation import ReannotationStatus
 from app.repositories.cell_types import CellTypeRepository
 from app.repositories.hotspots import HotspotRepository
 from app.schemas.annotations import (
@@ -24,10 +25,14 @@ from app.services.annotations import (
     fit_shape_to_bounds,
     merge_excluded_areas,
 )
+from app.services.hotspot_ratings import RATING_MANAGER_ROLES
 from app.services.hotspots import require_hotspot
 
 HOTSPOT_ANNOTATION_NOT_FOUND = "Annotation {annotation_id} does not exist on this hotspot."
 EXCLUDED_AREA_HAS_NO_CELL_TYPE = "An excluded area has no cell type; switch it to a cell first."
+REANNOTATION_NOT_STARTED = "Start reannotating this hotspot to get a layer of your own."
+REANNOTATION_CONFIRMED = "Your layer is confirmed; take the confirmation back to edit it."
+NOT_YOUR_LAYER = "Only the author can change this annotation; the model's cells cannot be changed."
 
 
 class HotspotAnnotationService:
@@ -40,14 +45,20 @@ class HotspotAnnotationService:
         self._hotspots = hotspots
         self._cell_types = cell_types
 
-    def list_annotations(self, hotspot_id: uuid.UUID) -> list[AnnotationRead]:
-        require_hotspot(self._hotspots, hotspot_id)
+    def list_annotations(self, hotspot_id: uuid.UUID, viewer: Account) -> list[AnnotationRead]:
+        """On a hotspot in layers, an annotator sees the model's cells and their own, an administrator everything."""
+        hotspot = require_hotspot(self._hotspots, hotspot_id)
         annotations = self._hotspots.list_annotations(hotspot_id)
+        if hotspot.layered and viewer.role not in RATING_MANAGER_ROLES:
+            annotations = [
+                item for item in annotations if item.source == AnnotationSource.MODEL or item.created_by_id == viewer.id
+            ]
         inside = cells_inside_excluded(annotations)
         return [_read(item, item.id in inside) for item in annotations]
 
     def create_annotation(self, hotspot_id: uuid.UUID, data: AnnotationCreate, author: Account) -> AnnotationRead:
         hotspot = require_hotspot(self._hotspots, hotspot_id)
+        _require_editable(hotspot, None, author)
         if data.cell_type_id is not None:
             self._require_cell_type(data.cell_type_id)
         annotation_id = data.id or uuid.uuid4()
@@ -80,6 +91,7 @@ class HotspotAnnotationService:
     ) -> AnnotationRead:
         hotspot = require_hotspot(self._hotspots, hotspot_id)
         annotation = self._require_annotation(hotspot_id, annotation_id)
+        _require_editable(hotspot, annotation, author)
         # An annotation belongs to whoever changed it last. A model cell thereby becomes annotator's work;
         # its `model_version` still says where it began.
         annotation.source = AnnotationSource.HUMAN
@@ -106,9 +118,11 @@ class HotspotAnnotationService:
             return self._save_area(annotation, hotspot)
         return self._read_saved(self._hotspots.save(annotation))
 
-    def delete_annotation(self, hotspot_id: uuid.UUID, annotation_id: uuid.UUID) -> None:
-        require_hotspot(self._hotspots, hotspot_id)
-        self._hotspots.delete(self._require_annotation(hotspot_id, annotation_id))
+    def delete_annotation(self, hotspot_id: uuid.UUID, annotation_id: uuid.UUID, user: Account) -> None:
+        hotspot = require_hotspot(self._hotspots, hotspot_id)
+        annotation = self._require_annotation(hotspot_id, annotation_id)
+        _require_editable(hotspot, annotation, user)
+        self._hotspots.delete(annotation)
 
     def export_geojson(self, hotspot_id: uuid.UUID) -> AnnotationFeatureCollection:
         require_hotspot(self._hotspots, hotspot_id)
@@ -180,6 +194,19 @@ class HotspotAnnotationService:
         if annotation is None or annotation.hotspot_id != hotspot_id:
             raise NotFoundError(HOTSPOT_ANNOTATION_NOT_FOUND.format(annotation_id=annotation_id))
         return annotation
+
+
+def _require_editable(hotspot: Hotspot, annotation: HotspotAnnotation | None, user: Account) -> None:
+    """On a hotspot in layers: only an annotator who started, and has not confirmed, changes their own cells."""
+    if not hotspot.layered:
+        return
+    own = next((item for item in hotspot.reannotations if item.account_id == user.id), None)
+    if own is None:
+        raise ForbiddenError(REANNOTATION_NOT_STARTED)
+    if own.status == ReannotationStatus.CONFIRMED:
+        raise ForbiddenError(REANNOTATION_CONFIRMED)
+    if annotation is not None and (annotation.source == AnnotationSource.MODEL or annotation.created_by_id != user.id):
+        raise ForbiddenError(NOT_YOUR_LAYER)
 
 
 def _read(annotation: HotspotAnnotation, inside_excluded: bool) -> AnnotationRead:

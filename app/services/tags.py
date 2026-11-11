@@ -71,8 +71,8 @@ class TagService:
         self, hotspot_ids: Sequence[uuid.UUID], add: Sequence[int], remove: Sequence[int], user: Account
     ) -> list[Hotspot]:
         """Remove, then add tags. Custom tags are shared; a core tag is `user`'s rating of that dimension (adding
-        one replaces their previous one, removing it clears it). A change of the team verdict sends a reannotated
-        hotspot back to the queue."""
+        one replaces their previous one, removing it clears it). A change of the team verdict sends a hotspot marked
+        reannotated by hand back to the queue (one reannotated in layers keeps its verdict from the agreement)."""
         hotspots = self._require_hotspots(hotspot_ids)
         added = self._require_tags(add)
         self._require_tags(remove)
@@ -94,7 +94,7 @@ class TagService:
                 if tag.dimension is None and tag.id not in present
             ]
             self._rate(hotspot, user, [tag for tag in added if tag.dimension is not None], removed_ids)
-            if team_tags(hotspot, core_tags) != verdict:
+            if team_tags(hotspot, core_tags) != verdict and not hotspot.layered:
                 hotspot.reannotated_at, hotspot.reannotated_by_id = None, None
         self._hotspots.save_all(hotspots)
         return hotspots
