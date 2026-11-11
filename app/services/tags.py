@@ -4,11 +4,10 @@ from collections.abc import Iterable, Sequence
 from app.exceptions.errors import ConflictError, InvalidInputError, NotFoundError
 from app.models.account import Account
 from app.models.hotspot import Hotspot
-from app.models.tag import HotspotRating, HotspotTag, Tag, TagDimension
+from app.models.tag import HotspotTag, Tag, TagDimension
 from app.repositories.hotspots import HotspotRepository
 from app.repositories.tags import TagRepository
 from app.schemas.tags import TagCreate, TagRead, TagUpdate
-from app.services.hotspot_ratings import HotspotReader, team_tags
 
 TAG_NOT_FOUND = "Tag {tag_id} does not exist."
 TAGS_NOT_FOUND = "Tags do not exist: {ids}."
@@ -26,15 +25,16 @@ def custom_weight_cap(core_weights: Iterable[int]) -> int | None:
     return min((weight for weight in core_weights if weight > 0), default=None)
 
 
+def _verdict(hotspot: Hotspot) -> tuple[Tag | None, ...]:
+    return tuple(hotspot.dimension_tag(dimension) for dimension in TagDimension)
+
+
 class TagService:
     """The shared tag list, and the tags put on hotspots."""
 
     def __init__(self, tags: TagRepository, hotspots: HotspotRepository) -> None:
         self._tags = tags
         self._hotspots = hotspots
-
-    def reader(self, viewer: Account) -> HotspotReader:
-        return HotspotReader(self._tags.list_all(), viewer)
 
     def list_tags(self) -> list[TagRead]:
         return [TagRead.model_validate(tag) for tag in self._tags.list_all()]
@@ -70,9 +70,9 @@ class TagService:
     def tag_hotspots(
         self, hotspot_ids: Sequence[uuid.UUID], add: Sequence[int], remove: Sequence[int], user: Account
     ) -> list[Hotspot]:
-        """Remove, then add tags. Custom tags are shared; a core tag is `user`'s rating of that dimension (adding
-        one replaces their previous one, removing it clears it). A change of the team verdict sends a hotspot marked
-        reannotated by hand back to the queue (one reannotated in layers keeps its verdict from the agreement)."""
+        """Remove, then add tags. A core tag replaces the hotspot's tag of the same dimension; a changed verdict
+        sends a hotspot marked reannotated by hand back to the queue (one reannotated in layers keeps its verdict
+        from the agreement)."""
         hotspots = self._require_hotspots(hotspot_ids)
         added = self._require_tags(add)
         self._require_tags(remove)
@@ -83,41 +83,22 @@ class TagService:
         added_ids = {tag.id for tag in added}
         # A tag both removed and added is kept as it is.
         removed_ids = set(remove) - added_ids
-        core_tags = [tag for tag in self._tags.list_all() if tag.dimension is not None]
         for hotspot in hotspots:
-            verdict = team_tags(hotspot, core_tags)
-            hotspot.tag_links = [link for link in hotspot.tag_links if link.tag_id not in removed_ids]
+            verdict = _verdict(hotspot)
+            hotspot.tag_links = [
+                link
+                for link in hotspot.tag_links
+                if link.tag_id not in removed_ids
+                and (link.tag.dimension not in dimensions or link.tag_id in added_ids)
+            ]
             present = {link.tag_id for link in hotspot.tag_links}
             hotspot.tag_links += [
-                HotspotTag(tag=tag, added_by_id=user.id)
-                for tag in added
-                if tag.dimension is None and tag.id not in present
+                HotspotTag(tag=tag, added_by_id=user.id) for tag in added if tag.id not in present
             ]
-            self._rate(hotspot, user, [tag for tag in added if tag.dimension is not None], removed_ids)
-            if team_tags(hotspot, core_tags) != verdict and not hotspot.layered:
+            if _verdict(hotspot) != verdict and not hotspot.layered:
                 hotspot.reannotated_at, hotspot.reannotated_by_id = None, None
         self._hotspots.save_all(hotspots)
         return hotspots
-
-    @staticmethod
-    def _rate(hotspot: Hotspot, user: Account, verdicts: list[Tag], removed_ids: set[int]) -> None:
-        """Sets `user`'s rating of the dimensions in `verdicts` and clears those of the removed tags; a rating
-        left with neither dimension is dropped (the user leaves the hotspot's team)."""
-        rating = hotspot.rating_of(user.id)
-        if rating is None:
-            if not verdicts:
-                return
-            rating = HotspotRating(account=user)
-            hotspot.ratings.append(rating)
-        for dimension in TagDimension:
-            current = rating.tag(dimension)
-            if current is not None and current.id in removed_ids:
-                rating.set_tag(dimension, None)
-        for tag in verdicts:
-            if tag.dimension is not None:
-                rating.set_tag(tag.dimension, tag)
-        if rating.is_empty:
-            hotspot.ratings.remove(rating)
 
     def _require(self, tag_id: int) -> Tag:
         tag = self._tags.get(tag_id)

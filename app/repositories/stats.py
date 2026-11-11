@@ -3,7 +3,7 @@ from collections.abc import Sequence
 from datetime import date, datetime
 from typing import Any
 
-from sqlalchemy import ColumnElement, Row, and_, case, distinct, func, null, select, union_all
+from sqlalchemy import ColumnElement, Row, and_, case, distinct, func, null, select
 from sqlalchemy.orm import Session
 
 from app.models.account import Account
@@ -11,7 +11,7 @@ from app.models.cell_type import CellType
 from app.models.hotspot import AnnotationKind, AnnotationSource, Hotspot, HotspotAnnotation, HotspotFolder
 from app.models.profile import AnnotatorProfile
 from app.models.slide import Slide, SlideStatus
-from app.models.tag import HotspotRating, HotspotTag, Tag, TagDimension
+from app.models.tag import HotspotTag, Tag, TagDimension
 from app.schemas.hotspots import HotspotStatus
 
 
@@ -24,23 +24,18 @@ class StatsRepository:
     def hotspot_status_by_folder(self) -> Sequence[Row[tuple[uuid.UUID, str, str | None, int]]]:
         """(folder id, folder name, HotspotStatus value, hotspot count); an empty folder has one row with status
         None and count 0."""
-        # Tagged once the ratings (of anyone) set both dimensions, as in app.services.hotspot_ratings.
         verdicts = (
-            select(
-                HotspotRating.hotspot_id,
-                func.count(HotspotRating.importance_tag_id).label("importance"),
-                func.count(HotspotRating.accuracy_tag_id).label("accuracy"),
-            )
-            .group_by(HotspotRating.hotspot_id)
+            select(HotspotTag.hotspot_id, func.count().label("verdicts"))
+            .join(Tag, Tag.id == HotspotTag.tag_id)
+            .where(Tag.dimension.is_not(None))
+            .group_by(HotspotTag.hotspot_id)
             .subquery()
         )
+        # A hotspot holds at most one tag per dimension, so "all dimensions" means fully tagged.
         status = case(
             (Hotspot.id.is_(None), null()),
             (Hotspot.reannotated_at.is_not(None), HotspotStatus.REANNOTATED.value),
-            (
-                and_(func.coalesce(verdicts.c.importance, 0) > 0, func.coalesce(verdicts.c.accuracy, 0) > 0),
-                HotspotStatus.TO_REANNOTATE.value,
-            ),
+            (func.coalesce(verdicts.c.verdicts, 0) >= len(TagDimension), HotspotStatus.TO_REANNOTATE.value),
             else_=HotspotStatus.UNTAGGED.value,
         )
         # Status computed in a subquery first: PostgreSQL would not match the CASE in GROUP BY to the one in the
@@ -122,10 +117,10 @@ class StatsRepository:
         )
 
     def verdicts_by_account(self) -> dict[int, int]:
-        """Account id -> tags it put on hotspots: the dimensions set in its ratings, and custom tags."""
-        uses = self._tag_uses().subquery()
         return self._count_by(
-            select(uses.c.account_id, func.count()).where(uses.c.account_id.is_not(None)).group_by(uses.c.account_id)
+            select(HotspotTag.added_by_id, func.count())
+            .where(HotspotTag.added_by_id.is_not(None))
+            .group_by(HotspotTag.added_by_id)
         )
 
     def annotations_by_account(self, recent_since: datetime) -> Sequence[Row[tuple[int | None, int, int, datetime]]]:
@@ -167,10 +162,9 @@ class StatsRepository:
 
     def tag_usage(self) -> Sequence[Row[tuple[int, str, TagDimension | None, int]]]:
         """(id, name, dimension, tagged hotspot count) of every tag."""
-        uses = self._tag_uses().subquery()
         return self._session.execute(
-            select(Tag.id, Tag.name, Tag.dimension, func.count(distinct(uses.c.hotspot_id)))
-            .outerjoin(uses, uses.c.tag_id == Tag.id)
+            select(Tag.id, Tag.name, Tag.dimension, func.count(HotspotTag.hotspot_id))
+            .outerjoin(HotspotTag, HotspotTag.tag_id == Tag.id)
             .group_by(Tag.id, Tag.name, Tag.dimension)
             .order_by(Tag.dimension.is_(None), Tag.dimension.desc(), Tag.weight.desc(), Tag.name)
         ).all()
@@ -183,18 +177,6 @@ class StatsRepository:
             select(day, func.count()).where(column >= since, *where).group_by(day)
         ).all()
         return {_as_date(value): count for value, count in rows}
-
-    @staticmethod
-    def _tag_uses() -> Any:
-        """(hotspot id, tag id, account id) of every custom tag on a hotspot and every dimension of every rating."""
-        return union_all(
-            select(HotspotTag.hotspot_id, HotspotTag.tag_id, HotspotTag.added_by_id.label("account_id")),
-            *(
-                select(HotspotRating.hotspot_id, column.label("tag_id"), HotspotRating.account_id)
-                .where(column.is_not(None))
-                for column in (HotspotRating.importance_tag_id, HotspotRating.accuracy_tag_id)
-            ),
-        )
 
     def _count_by(self, statement: Any) -> dict[int, int]:
         return {key: count for key, count in self._session.execute(statement).all()}

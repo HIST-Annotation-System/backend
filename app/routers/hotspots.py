@@ -33,6 +33,7 @@ from app.schemas.hotspots import (
 from app.schemas.reannotation import AgreementRead, AgreementSettings
 from app.schemas.tags import HotspotTagsBulk
 from app.services.hotspot_images import UPLOAD_MAX_BYTES
+from app.services.hotspot_reader import read_hotspot
 from app.services.slide_analysis import MEDIA_TYPE_JPEG
 
 HOTSPOT_ANNOTATIONS_EXPORT_FILENAME = "annotations_hotspot_{hotspot_id}.geojson"
@@ -85,23 +86,9 @@ def list_hotspots(
     order: SortOrder = SortOrder.DESC,
     review_status: Annotated[HotspotStatus | None, Query(alias="status")] = None,
     tag_ids: Annotated[list[int] | None, Query()] = None,
-    rating_count: Annotated[int | None, Query(ge=0)] = None,
-    rated_by_me: bool | None = None,
 ) -> list[HotspotRead]:
-    """All folders when `folder_id` is left out; `tag_ids` keeps hotspots that carry every listed tag;
-    `rating_count` those rated by exactly that many annotators; `rated_by_me=false` those the user has not rated
-    (both importance and accuracy) yet."""
-    return service.list_hotspots(
-        folder_id,
-        sort,
-        order,
-        slide_id,
-        review_status,
-        tag_ids or (),
-        viewer=user,
-        rating_count=rating_count,
-        rated_by_me=rated_by_me,
-    )
+    """All folders when `folder_id` is left out; `tag_ids` keeps hotspots that carry every listed tag."""
+    return service.list_hotspots(folder_id, sort, order, slide_id, review_status, tag_ids or (), viewer=user)
 
 
 @router.post("/hotspots/tags/bulk", status_code=status.HTTP_204_NO_CONTENT)
@@ -155,9 +142,9 @@ def delete_hotspot(hotspot_id: uuid.UUID, service: HotspotServiceDep) -> None:
 
 @router.put("/hotspots/{hotspot_id}/tags/{tag_id}", response_model=HotspotRead)
 def add_hotspot_tag(hotspot_id: uuid.UUID, tag_id: int, service: TagServiceDep, user: CurrentUserDep) -> HotspotRead:
-    """A core tag is the user's rating of its dimension (replacing their previous one); a custom tag is shared."""
+    """A core tag replaces the hotspot's tag of the same dimension."""
     (hotspot,) = service.tag_hotspots([hotspot_id], [tag_id], [], user)
-    return service.reader(user).read(hotspot)
+    return read_hotspot(hotspot, user)
 
 
 @router.delete("/hotspots/{hotspot_id}/tags/{tag_id}", response_model=HotspotRead)
@@ -165,7 +152,7 @@ def remove_hotspot_tag(
     hotspot_id: uuid.UUID, tag_id: int, service: TagServiceDep, user: CurrentUserDep
 ) -> HotspotRead:
     (hotspot,) = service.tag_hotspots([hotspot_id], [], [tag_id], user)
-    return service.reader(user).read(hotspot)
+    return read_hotspot(hotspot, user)
 
 
 @router.get("/hotspots/{hotspot_id}/image")

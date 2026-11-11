@@ -65,7 +65,6 @@ def _hotspot_service(session: Session, resources: AppResources, scope: int | Non
         SlideRepository(session, scope),
         _slide_service(session, resources, scope),
         resources.storage,
-        TagRepository(session),
     )
 
 

@@ -25,7 +25,7 @@ from app.services.annotations import (
     fit_shape_to_bounds,
     merge_excluded_areas,
 )
-from app.services.hotspot_ratings import RATING_MANAGER_ROLES
+from app.services.hotspot_reader import RATING_MANAGER_ROLES
 from app.services.hotspots import require_hotspot
 
 HOTSPOT_ANNOTATION_NOT_FOUND = "Annotation {annotation_id} does not exist on this hotspot."

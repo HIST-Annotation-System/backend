@@ -2,7 +2,7 @@ import logging
 import threading
 import uuid
 from collections import OrderedDict
-from collections.abc import Collection
+from collections.abc import Callable, Collection
 from datetime import UTC, datetime, timedelta
 from pathlib import PurePath
 
@@ -13,10 +13,10 @@ from app.core.constants import NAME_MAX_LENGTH
 from app.exceptions.errors import AppError, ConflictError, InvalidInputError, NotFoundError, StorageError
 from app.models.account import Account
 from app.models.hotspot import Hotspot, HotspotBatch, HotspotBatchStatus, HotspotFeature, HotspotFolder
+from app.models.tag import TagDimension
 from app.models.slide import Slide
 from app.repositories.hotspots import HotspotRepository
 from app.repositories.slides import SlideRepository
-from app.repositories.tags import TagRepository
 from app.schemas.hotspots import (
     BoxFeatures,
     BoxFeaturesRequest,
@@ -30,7 +30,7 @@ from app.schemas.hotspots import (
     SortOrder,
 )
 from app.services.hotspot_features import compute_features
-from app.services.hotspot_ratings import HotspotReader, hotspot_status
+from app.services.hotspot_reader import hotspot_status, read_hotspot
 from app.services.hotspot_images import (
     EXTENSIONS,
     MEDIA_TYPES,
@@ -80,8 +80,19 @@ def require_hotspot(hotspots: HotspotRepository, hotspot_id: uuid.UUID) -> Hotsp
     return hotspot
 
 
-# Sorted by the ratings (as the viewer may see them); every other sort is an image feature.
-RATING_SORTS = (HotspotSort.SCORE, HotspotSort.IMPORTANCE, HotspotSort.ACCURACY, HotspotSort.RATING_COUNT)
+def _sort_key(sort: HotspotSort) -> Callable[[Hotspot], float | None]:
+    """The value a hotspot is sorted by; None when it has none (no such tag, or a feature not computed)."""
+    if sort == HotspotSort.SCORE:
+        return lambda hotspot: hotspot.score
+    if sort in (HotspotSort.IMPORTANCE, HotspotSort.ACCURACY):
+        dimension = TagDimension(sort.value)
+
+        def tag_weight(hotspot: Hotspot) -> float | None:
+            tag = hotspot.dimension_tag(dimension)
+            return None if tag is None else tag.weight
+
+        return tag_weight
+    return lambda hotspot: (hotspot.features or {}).get(sort.value)
 
 
 def fail_interrupted_batches(session_factory: sessionmaker[Session], now: datetime | None = None) -> None:
@@ -107,9 +118,7 @@ class HotspotService:
         slides: SlideRepository,
         slide_service: SlideService,
         storage: ObjectStorage,
-        tags: TagRepository,
     ) -> None:
-        self._tags = tags
         self._hotspots = hotspots
         self._slides = slides
         self._slide_service = slide_service
@@ -140,9 +149,6 @@ class HotspotService:
         for hotspot_id in hotspot_ids:
             self._storage.delete_prefix(HOTSPOT_OBJECTS_PREFIX.format(hotspot_id=hotspot_id))
 
-    def reader(self, viewer: Account | None) -> HotspotReader:
-        return HotspotReader(self._tags.list_all(), viewer)
-
     def list_hotspots(
         self,
         folder_id: uuid.UUID | None,
@@ -152,30 +158,19 @@ class HotspotService:
         status: HotspotStatus | None = None,
         tag_ids: Collection[int] = (),
         viewer: Account | None = None,
-        rating_count: int | None = None,
-        rated_by_me: bool | None = None,
     ) -> list[HotspotRead]:
-        """Hotspots in the review `status` that carry all `tag_ids` (as `viewer` sees them), with exactly
-        `rating_count` ratings and (not) fully rated by `viewer` (`rated_by_me`), when given; ordered by creation time, an image feature, the ratings or their count (ties and
-        missing values: newest first; hotspots without a value always come last).
+        """Hotspots in the review `status` that carry all `tag_ids`, ordered by creation time, an image feature
+        or their tags (ties and missing values: newest first; hotspots without a value always come last).
         """
-        reader = self.reader(viewer)
         hotspots = [
             hotspot
             for hotspot in self._hotspots.list_hotspots(folder_id, slide_id)  # newest first
             if (status is None or hotspot_status(hotspot) == status)
-            and (rating_count is None or len(hotspot.ratings) == rating_count)
-            and (rated_by_me is None or reader.rated_by_viewer(hotspot) == rated_by_me)
-            and set(tag_ids) <= {tag.id for tag in reader.visible_tags(hotspot)}
+            and set(tag_ids) <= {link.tag_id for link in hotspot.tag_links}
         ]
         self._fill_missing_features(hotspots)
         if sort != HotspotSort.CREATED_AT:
-
-            def key(hotspot: Hotspot) -> float | None:
-                if sort in RATING_SORTS:
-                    return reader.sort_value(hotspot, sort)
-                return (hotspot.features or {}).get(sort.value)
-
+            key = _sort_key(sort)
             known = [hotspot for hotspot in hotspots if key(hotspot) is not None]
             unknown = [hotspot for hotspot in hotspots if key(hotspot) is None]
             # A stable sort keeps the newest-first order among equal values.
@@ -183,10 +178,10 @@ class HotspotService:
             hotspots = known + unknown
         elif order == SortOrder.ASC:
             hotspots.reverse()
-        return [reader.read(item) for item in hotspots]
+        return [read_hotspot(item, viewer) for item in hotspots]
 
     def get_hotspot(self, hotspot_id: uuid.UUID, viewer: Account | None = None) -> HotspotRead:
-        return self.reader(viewer).read(require_hotspot(self._hotspots, hotspot_id))
+        return read_hotspot(require_hotspot(self._hotspots, hotspot_id), viewer)
 
     def box_features(self, data: BoxFeaturesRequest) -> list[BoxFeatures]:
         """Descriptors of slide squares as a hotspot cut from each would get them, without saving anything.
@@ -300,7 +295,7 @@ class HotspotService:
             hotspot.reannotated_at, hotspot.reannotated_by_id = None, None
         elif data.reannotated and hotspot.reannotated_at is None:
             hotspot.reannotated_at, hotspot.reannotated_by_id = datetime.now(UTC), user.id
-        return self.reader(user).read(self._hotspots.save(hotspot))
+        return read_hotspot(self._hotspots.save(hotspot), user)
 
     def delete_hotspot(self, hotspot_id: uuid.UUID) -> None:
         self._hotspots.delete(require_hotspot(self._hotspots, hotspot_id))
@@ -358,7 +353,7 @@ class HotspotService:
         self._storage.put_bytes(image_key, image.data, MEDIA_TYPES[image.image_type])
         self._storage.put_bytes(HOTSPOT_THUMBNAIL_KEY.format(hotspot_id=hotspot.id), image.thumbnail, MEDIA_TYPE_JPEG)
         try:
-            return self.reader(None).read(self._hotspots.save(hotspot))
+            return read_hotspot(self._hotspots.save(hotspot), None)
         except Exception:
             self._storage.delete_prefix(HOTSPOT_OBJECTS_PREFIX.format(hotspot_id=hotspot.id))
             raise

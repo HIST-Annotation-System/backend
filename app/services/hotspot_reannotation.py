@@ -21,7 +21,7 @@ from app.repositories.hotspots import HotspotRepository
 from app.repositories.organizations import OrganizationRepository
 from app.schemas.reannotation import AgreementRead, AgreementSettings
 from app.services.agreement import Cell, compute, polygon_of
-from app.services.hotspot_ratings import RATING_MANAGER_ROLES
+from app.services.hotspot_reader import RATING_MANAGER_ROLES
 from app.services.hotspots import require_hotspot
 from app.services.reannotation_read import MIN_CONFIRMED, agreement_read, confirmed_of, metric_value
 

@@ -5,8 +5,8 @@ from app.models.base import Base
 
 
 class AnnotationGroup(Base):
-    """Old annotator groups, no longer used by the app (a hotspot's group is now whoever rated it, see
-    HotspotRating). Kept mapped only because the table and `annotator_profiles.group_id` still exist."""
+    """Old annotator groups, no longer used by the app. Kept mapped only because the table and
+    `annotator_profiles.group_id` still exist."""
 
     __tablename__ = "annotation_groups"
 

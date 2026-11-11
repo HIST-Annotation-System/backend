@@ -10,10 +10,11 @@ if TYPE_CHECKING:
     from app.models.account import Account
     from app.models.cell_type import CellType
     from app.models.reannotation import HotspotAgreement, HotspotReannotation
-    from app.models.tag import HotspotRating, HotspotTag, Tag
+    from app.models.tag import HotspotTag, Tag
 
 from app.core.constants import NAME_MAX_LENGTH
 from app.models.base import Base, JsonType, NullableJsonType
+from app.models.tag import TagDimension
 
 
 class HotspotFolder(Base):
@@ -127,11 +128,7 @@ class Hotspot(Base):
     segmentation_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
-    # Custom tags only; the importance/accuracy verdicts are per annotator, in `ratings`.
     tag_links: Mapped[list["HotspotTag"]] = relationship(
-        lazy="selectin", cascade="all, delete-orphan", passive_deletes=True
-    )
-    ratings: Mapped[list["HotspotRating"]] = relationship(
         lazy="selectin", cascade="all, delete-orphan", passive_deletes=True
     )
     reannotations: Mapped[list["HotspotReannotation"]] = relationship(
@@ -142,11 +139,25 @@ class Hotspot(Base):
     )
 
     @property
-    def custom_tags(self) -> list["Tag"]:
-        return sorted((link.tag for link in self.tag_links), key=lambda tag: tag.name)
+    def tags(self) -> list["Tag"]:
+        """Core tags first (in TagDimension order), then the rest by name."""
+        order = list(TagDimension)
+        tags = (link.tag for link in self.tag_links)
+        return sorted(tags, key=lambda tag: (order.index(tag.dimension) if tag.dimension else len(order), tag.name))
 
-    def rating_of(self, account_id: int) -> "HotspotRating | None":
-        return next((rating for rating in self.ratings if rating.account_id == account_id), None)
+    @property
+    def score(self) -> int:
+        return sum(link.tag.weight for link in self.tag_links)
+
+    def dimension_tag(self, dimension: TagDimension) -> "Tag | None":
+        return next((link.tag for link in self.tag_links if link.tag.dimension == dimension), None)
+
+    @property
+    def assessed_by(self) -> str | None:
+        """Who set the latest importance/accuracy verdict (None if nobody did, or the account is gone)."""
+        verdicts = [link for link in self.tag_links if link.tag.dimension is not None]
+        latest = max(verdicts, key=lambda link: link.created_at, default=None)
+        return latest.added_by.username if latest and latest.added_by else None
 
 
 class AnnotationKind(enum.StrEnum):
