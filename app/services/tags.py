@@ -70,8 +70,9 @@ class TagService:
     def tag_hotspots(
         self, hotspot_ids: Sequence[uuid.UUID], add: Sequence[int], remove: Sequence[int], user: Account
     ) -> list[Hotspot]:
-        """Remove, then add tags. A core tag replaces the hotspot's tag of the same dimension; a changed
-        verdict sends a reannotated hotspot back to the queue."""
+        """Remove, then add tags. A core tag replaces the hotspot's tag of the same dimension; a changed verdict
+        sends a hotspot marked reannotated by hand back to the queue (one reannotated in layers keeps its verdict
+        from the agreement)."""
         hotspots = self._require_hotspots(hotspot_ids)
         added = self._require_tags(add)
         self._require_tags(remove)
@@ -94,7 +95,7 @@ class TagService:
             hotspot.tag_links += [
                 HotspotTag(tag=tag, added_by_id=user.id) for tag in added if tag.id not in present
             ]
-            if _verdict(hotspot) != verdict:
+            if _verdict(hotspot) != verdict and not hotspot.layered:
                 hotspot.reannotated_at, hotspot.reannotated_by_id = None, None
         self._hotspots.save_all(hotspots)
         return hotspots

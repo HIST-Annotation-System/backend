@@ -44,13 +44,15 @@ class SlideUploadService:
         uploaded_by_id: int | None = None,
         file_size: int | None = None,
         allow_duplicate: bool = False,
+        *,
+        organization_id: int,
     ) -> StartUploadResponse:
         original = PurePosixPath(filename.replace("\\", "/")).name
         stem, suffix = validate_upload_name(original)
         if file_size is not None and not allow_duplicate:
             # Serialized like imports, so two admins starting the same file at once can't both pass.
             self._slides.lock_imports()
-            duplicate = self._slides.find_duplicate(original, file_size)
+            duplicate = self._slides.find_duplicate(original, file_size, organization_id)
             if duplicate is not None:
                 raise ConflictError(DUPLICATE_SLIDE.format(name=duplicate.name), DUPLICATE_SLIDE_CODE)
 
@@ -68,6 +70,7 @@ class SlideUploadService:
                 # The declared size, replaced by the stored object's real size on completion.
                 file_size_bytes=file_size,
                 uploaded_by_id=uploaded_by_id,
+                organization_id=organization_id,
             )
         )
         return StartUploadResponse(slide_id=slide_id, upload_id=upload_id)
@@ -110,7 +113,9 @@ class SlideUploadService:
         self._storage.abort_multipart_uploads(slide.storage_key)
         self._slides.delete(slide)
 
-    def import_from_storage(self, key: str, uploaded_by_id: int | None = None) -> tuple[uuid.UUID, bool]:
+    def import_from_storage(
+        self, key: str, uploaded_by_id: int | None = None, *, organization_id: int
+    ) -> tuple[uuid.UUID, bool]:
         """Registers an object - or an extracted multi-file slide folder, a key ending in "/" - already
         sitting in the bucket as a new slide, skipping the upload step.
 
@@ -147,6 +152,7 @@ class SlideUploadService:
                     file_size_bytes=file_size,
                     status=SlideStatus.PROCESSING,
                     uploaded_by_id=uploaded_by_id,
+                    organization_id=organization_id,
                 )
             )
         except IntegrityError:

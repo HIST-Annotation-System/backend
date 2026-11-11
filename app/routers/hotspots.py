@@ -5,11 +5,13 @@ from fastapi import APIRouter, Query, Response, UploadFile, status
 from fastapi.responses import JSONResponse
 
 from app.core.constants import CONTENT_DISPOSITION_ATTACHMENT, MEDIA_TYPE_GEOJSON
-from app.dependencies.auth import CurrentUserDep
+from app.dependencies.auth import CurrentUserDep, ManagerDep
 from app.dependencies.resources import ResourcesDep
 from app.dependencies.services import (
     HotspotAnnotationServiceDep,
+    HotspotReannotationServiceDep,
     HotspotServiceDep,
+    OrganizationServiceDep,
     TagServiceDep,
     run_hotspot_batch,
 )
@@ -17,6 +19,7 @@ from app.schemas.annotations import AnnotationCreate, AnnotationRead, Annotation
 from app.schemas.hotspots import (
     BoxFeatures,
     BoxFeaturesRequest,
+    HotspotFolderCreate,
     HotspotBatchCreate,
     HotspotBatchRead,
     HotspotFolderRead,
@@ -27,14 +30,17 @@ from app.schemas.hotspots import (
     HotspotUpdate,
     SortOrder,
 )
+from app.schemas.reannotation import AgreementRead, AgreementSettings
 from app.schemas.tags import HotspotTagsBulk
 from app.services.hotspot_images import UPLOAD_MAX_BYTES
+from app.services.hotspot_reader import read_hotspot
 from app.services.slide_analysis import MEDIA_TYPE_JPEG
 
 HOTSPOT_ANNOTATIONS_EXPORT_FILENAME = "annotations_hotspot_{hotspot_id}.geojson"
-# A hotspot image never changes for a given id.
-IMMUTABLE_CACHE_HEADERS = {"Cache-Control": "public, max-age=31536000, immutable"}
+# A hotspot image never changes for a given id; it is loaded with the session cookie, so cached per user.
+IMMUTABLE_CACHE_HEADERS = {"Cache-Control": "private, max-age=31536000, immutable"}
 
+# Every endpoint needs a signed-in user: the services only see the user's organization (see `OrgScopeDep`).
 router = APIRouter()
 
 
@@ -44,8 +50,10 @@ def list_folders(service: HotspotServiceDep) -> list[HotspotFolderRead]:
 
 
 @router.post("/hotspot-folders", response_model=HotspotFolderRead, status_code=status.HTTP_201_CREATED)
-def create_folder(data: HotspotFolderWrite, service: HotspotServiceDep) -> HotspotFolderRead:
-    return service.create_folder(data.name)
+def create_folder(
+    data: HotspotFolderCreate, service: HotspotServiceDep, user: CurrentUserDep, organizations: OrganizationServiceDep
+) -> HotspotFolderRead:
+    return service.create_folder(data.name, organizations.target_for(user, data.organization_id))
 
 
 @router.patch("/hotspot-folders/{folder_id}", response_model=HotspotFolderRead)
@@ -71,6 +79,7 @@ def upload_hotspot_image(folder_id: uuid.UUID, file: UploadFile, service: Hotspo
 @router.get("/hotspots", response_model=list[HotspotRead])
 def list_hotspots(
     service: HotspotServiceDep,
+    user: CurrentUserDep,
     folder_id: uuid.UUID | None = None,
     slide_id: uuid.UUID | None = None,
     sort: HotspotSort = HotspotSort.CREATED_AT,
@@ -79,7 +88,7 @@ def list_hotspots(
     tag_ids: Annotated[list[int] | None, Query()] = None,
 ) -> list[HotspotRead]:
     """All folders when `folder_id` is left out; `tag_ids` keeps hotspots that carry every listed tag."""
-    return service.list_hotspots(folder_id, sort, order, slide_id, review_status, tag_ids or ())
+    return service.list_hotspots(folder_id, sort, order, slide_id, review_status, tag_ids or (), viewer=user)
 
 
 @router.post("/hotspots/tags/bulk", status_code=status.HTTP_204_NO_CONTENT)
@@ -115,8 +124,8 @@ def get_hotspot_batch(batch_id: uuid.UUID, service: HotspotServiceDep) -> Hotspo
 
 
 @router.get("/hotspots/{hotspot_id}", response_model=HotspotRead)
-def get_hotspot(hotspot_id: uuid.UUID, service: HotspotServiceDep) -> HotspotRead:
-    return service.get_hotspot(hotspot_id)
+def get_hotspot(hotspot_id: uuid.UUID, service: HotspotServiceDep, user: CurrentUserDep) -> HotspotRead:
+    return service.get_hotspot(hotspot_id, user)
 
 
 @router.patch("/hotspots/{hotspot_id}", response_model=HotspotRead)
@@ -135,7 +144,7 @@ def delete_hotspot(hotspot_id: uuid.UUID, service: HotspotServiceDep) -> None:
 def add_hotspot_tag(hotspot_id: uuid.UUID, tag_id: int, service: TagServiceDep, user: CurrentUserDep) -> HotspotRead:
     """A core tag replaces the hotspot's tag of the same dimension."""
     (hotspot,) = service.tag_hotspots([hotspot_id], [tag_id], [], user)
-    return HotspotRead.model_validate(hotspot)
+    return read_hotspot(hotspot, user)
 
 
 @router.delete("/hotspots/{hotspot_id}/tags/{tag_id}", response_model=HotspotRead)
@@ -143,7 +152,7 @@ def remove_hotspot_tag(
     hotspot_id: uuid.UUID, tag_id: int, service: TagServiceDep, user: CurrentUserDep
 ) -> HotspotRead:
     (hotspot,) = service.tag_hotspots([hotspot_id], [], [tag_id], user)
-    return HotspotRead.model_validate(hotspot)
+    return read_hotspot(hotspot, user)
 
 
 @router.get("/hotspots/{hotspot_id}/image")
@@ -158,8 +167,10 @@ def get_hotspot_thumbnail(hotspot_id: uuid.UUID, service: HotspotServiceDep) -> 
 
 
 @router.get("/hotspots/{hotspot_id}/annotations", response_model=list[AnnotationRead])
-def list_hotspot_annotations(hotspot_id: uuid.UUID, service: HotspotAnnotationServiceDep) -> list[AnnotationRead]:
-    return service.list_annotations(hotspot_id)
+def list_hotspot_annotations(
+    hotspot_id: uuid.UUID, service: HotspotAnnotationServiceDep, user: CurrentUserDep
+) -> list[AnnotationRead]:
+    return service.list_annotations(hotspot_id, user)
 
 
 @router.get("/hotspots/{hotspot_id}/annotations/export")
@@ -194,6 +205,58 @@ def update_hotspot_annotation(
 
 @router.delete("/hotspots/{hotspot_id}/annotations/{annotation_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_hotspot_annotation(
-    hotspot_id: uuid.UUID, annotation_id: uuid.UUID, service: HotspotAnnotationServiceDep
+    hotspot_id: uuid.UUID, annotation_id: uuid.UUID, service: HotspotAnnotationServiceDep, user: CurrentUserDep
 ) -> None:
-    service.delete_annotation(hotspot_id, annotation_id)
+    service.delete_annotation(hotspot_id, annotation_id, user)
+
+
+@router.get("/hotspots/{hotspot_id}/agreement", response_model=AgreementRead)
+def get_hotspot_agreement(
+    hotspot_id: uuid.UUID, service: HotspotReannotationServiceDep, user: CurrentUserDep
+) -> AgreementRead:
+    """How the annotators who confirmed agree; each one's figures only for administrators."""
+    return service.get(hotspot_id, user)
+
+
+@router.post("/hotspots/{hotspot_id}/reannotation", response_model=AgreementRead)
+def start_hotspot_reannotation(
+    hotspot_id: uuid.UUID, service: HotspotReannotationServiceDep, user: CurrentUserDep
+) -> AgreementRead:
+    """The user's own layer, copied from the model's cells (409 while the model is still segmenting)."""
+    return service.start(hotspot_id, user)
+
+
+@router.put("/hotspots/{hotspot_id}/reannotation/confirmation", response_model=AgreementRead)
+def confirm_hotspot_reannotation(
+    hotspot_id: uuid.UUID, service: HotspotReannotationServiceDep, user: CurrentUserDep
+) -> AgreementRead:
+    return service.confirm(hotspot_id, user)
+
+
+@router.delete("/hotspots/{hotspot_id}/reannotation/confirmation", response_model=AgreementRead)
+def unconfirm_hotspot_reannotation(
+    hotspot_id: uuid.UUID, service: HotspotReannotationServiceDep, user: CurrentUserDep
+) -> AgreementRead:
+    return service.unconfirm(hotspot_id, user)
+
+
+@router.get("/agreement-settings", response_model=AgreementSettings)
+def get_agreement_settings(
+    service: HotspotReannotationServiceDep,
+    user: ManagerDep,
+    organizations: OrganizationServiceDep,
+    organization_id: int | None = None,
+) -> AgreementSettings:
+    return service.get_settings(organizations.target_for(user, organization_id))
+
+
+@router.put("/agreement-settings", response_model=AgreementSettings)
+def update_agreement_settings(
+    data: AgreementSettings,
+    service: HotspotReannotationServiceDep,
+    user: ManagerDep,
+    organizations: OrganizationServiceDep,
+    organization_id: int | None = None,
+) -> AgreementSettings:
+    """Which figure the threshold applies to, and how high it is; the organization's hotspots are judged again."""
+    return service.update_settings(organizations.target_for(user, organization_id), data)

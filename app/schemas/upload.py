@@ -16,6 +16,8 @@ class StartUploadRequest(BaseModel):
     file_size: int | None = Field(default=None, ge=0)
     # Set after the user confirmed they really want another copy of a file already in the library.
     allow_duplicate: bool = False
+    # Only the system admin chooses; everyone else uploads into their own organization.
+    organization_id: int | None = None
 
 
 class UploadProgressRequest(BaseModel):
@@ -60,6 +62,7 @@ class CompleteUploadRequest(BaseModel):
 
 class ImportFromStorageRequest(BaseModel):
     key: str = Field(min_length=NAME_MIN_LENGTH, max_length=STORAGE_KEY_MAX_LENGTH)
+    organization_id: int | None = None
 
 
 class ImportFromStorageResponse(BaseModel):

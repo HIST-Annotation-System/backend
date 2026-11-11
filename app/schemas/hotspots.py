@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_vali
 
 from app.core.constants import NAME_MAX_LENGTH, NAME_MIN_LENGTH
 from app.models.hotspot import HotspotBatchStatus, HotspotFeature, HotspotImageType, SegmentationStatus
+from app.schemas.reannotation import ReannotationSummary
 from app.schemas.tags import TagRead
 
 HOTSPOT_UPDATE_EMPTY = "Provide name, folder_id and/or reannotated."
@@ -47,11 +48,17 @@ class HotspotFolderWrite(BaseModel):
     name: Name
 
 
+class HotspotFolderCreate(HotspotFolderWrite):
+    # Only the system admin chooses; everyone else creates folders in their own organization.
+    organization_id: int | None = None
+
+
 class HotspotFolderRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
     name: str
+    organization_id: int
     hotspot_count: int
     created_at: datetime
 
@@ -139,6 +146,9 @@ class HotspotRead(BaseModel):
     reannotated_at: datetime | None
     # Who set the latest importance/accuracy verdict.
     assessed_by: str | None
+    # Both set by app.services.hotspot_reader.read_hotspot.
+    status: HotspotStatus = HotspotStatus.UNTAGGED
+    reannotation: ReannotationSummary = ReannotationSummary()
     # Cells annotated by people; untouched model cells don't count.
     annotation_count: int
     segmentation_status: SegmentationStatus

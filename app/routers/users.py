@@ -1,20 +1,17 @@
-from typing import Annotated
+from fastapi import APIRouter
 
-from fastapi import APIRouter, Depends, HTTPException, status
-
-from app.dependencies.auth import AccountServiceDep, CurrentUserDep, RequireRole
+from app.dependencies.auth import AccountServiceDep, CurrentUserDep, ManagerDep, OrgScopeDep
 from app.dependencies.resources import SessionDep
+from app.dependencies.services import OrganizationServiceDep
 from app.models.account import Account, Role
 from app.schemas.user import AccountCreate, AccountResponse, ProfileUpdate
 
 router = APIRouter()
 
-RequireAdmin = Annotated[CurrentUserDep, Depends(RequireRole(Role.ADMIN))]
-
 
 @router.get("/", response_model=list[AccountResponse])
-def get_all_accounts(current_admin: RequireAdmin, account_service: AccountServiceDep) -> list[Account]:
-    return account_service.account_repo.get_all()
+def get_all_accounts(_admin: ManagerDep, scope: OrgScopeDep, account_service: AccountServiceDep) -> list[Account]:
+    return account_service.list_accounts(scope)
 
 
 @router.get("/me", response_model=AccountResponse)
@@ -24,41 +21,43 @@ def get_current_user_profile(current_user: CurrentUserDep) -> Account:
 
 @router.post("/", response_model=AccountResponse)
 def create_account(
-    request: AccountCreate, 
-    current_admin: RequireAdmin, 
+    request: AccountCreate,
+    current_admin: ManagerDep,
     account_service: AccountServiceDep,
+    organizations: OrganizationServiceDep,
     session: SessionDep
-) -> AccountResponse:
-    # Admin creates an account for an annotator
-    account = account_service.create_account(request)
+) -> Account:
+    organization_id = (
+        None if request.role == Role.ADMIN else organizations.target_for(current_admin, request.organization_id)
+    )
+    account = account_service.create_account(current_admin, request, organization_id)
     session.commit()
     return account
 
 
 @router.put("/{account_id}", response_model=AccountResponse)
 def update_account(
-    account_id: int, 
-    request: ProfileUpdate, 
-    current_user: CurrentUserDep, 
+    account_id: int,
+    request: ProfileUpdate,
+    current_user: CurrentUserDep,
     account_service: AccountServiceDep,
+    organizations: OrganizationServiceDep,
     session: SessionDep
-) -> AccountResponse:
-    is_admin = current_user.role == Role.ADMIN
-    if not is_admin and current_user.id != account_id:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not enough privileges to edit this account")
-
-    account = account_service.update_profile(current_user.id, account_id, is_admin=is_admin, data=request)
+) -> Account:
+    if request.organization_id is not None and current_user.role == Role.ADMIN:
+        organizations.require(request.organization_id)
+    account = account_service.update_profile(current_user, account_id, request)
     session.commit()
     return account
 
 
 @router.delete("/{account_id}")
 def delete_account(
-    account_id: int, 
-    current_admin: RequireAdmin, 
+    account_id: int,
+    current_admin: ManagerDep,
     account_service: AccountServiceDep,
     session: SessionDep
 ) -> dict[str, str]:
-    account_service.delete_account(current_admin.id, account_id, is_admin=True)
+    account_service.delete_account(current_admin, account_id)
     session.commit()
     return {"status": "ok"}

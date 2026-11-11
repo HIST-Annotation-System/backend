@@ -2,9 +2,9 @@ import uuid
 
 from fastapi import APIRouter, Depends, status
 
-from app.dependencies.auth import AdminDep, require_admin
+from app.dependencies.auth import AdminDep, ManagerDep, require_manager
 from app.dependencies.resources import ResourcesDep
-from app.dependencies.services import SlideIngestServiceDep, SlideUploadServiceDep
+from app.dependencies.services import OrganizationServiceDep, SlideIngestServiceDep, SlideUploadServiceDep
 from app.schemas.upload import (
     CompleteUploadRequest,
     ImportFromStorageRequest,
@@ -19,13 +19,18 @@ from app.schemas.upload import (
     UploadProgressRequest,
 )
 
-# Adding slides is an administrator task.
-router = APIRouter(dependencies=[Depends(require_admin)])
+# Adding slides is a task of the system admin or an organization's admin (into their own organization).
+router = APIRouter(dependencies=[Depends(require_manager)])
 
 
 @router.post("/start", response_model=StartUploadResponse)
-def start_upload(req: StartUploadRequest, admin: AdminDep, service: SlideUploadServiceDep) -> StartUploadResponse:
-    return service.start_upload(req.filename, admin.id, req.file_size, req.allow_duplicate)
+def start_upload(
+    req: StartUploadRequest, admin: ManagerDep, service: SlideUploadServiceDep, organizations: OrganizationServiceDep
+) -> StartUploadResponse:
+    organization_id = organizations.target_for(admin, req.organization_id)
+    return service.start_upload(
+        req.filename, admin.id, req.file_size, req.allow_duplicate, organization_id=organization_id
+    )
 
 
 @router.post("/presigned-urls", response_model=PresignedUrlsResponse)
@@ -64,6 +69,7 @@ def cancel_upload(slide_id: uuid.UUID, service: SlideUploadServiceDep) -> None:
     service.cancel_upload(slide_id)
 
 
+# The bucket browser behind imports shows every organization's files, so importing stays with the system admin.
 @router.post("/import-from-storage", response_model=ImportFromStorageResponse)
 def import_from_storage(
     req: ImportFromStorageRequest,
@@ -71,8 +77,10 @@ def import_from_storage(
     service: SlideUploadServiceDep,
     ingest: SlideIngestServiceDep,
     resources: ResourcesDep,
+    organizations: OrganizationServiceDep,
 ) -> ImportFromStorageResponse:
-    slide_id, created = service.import_from_storage(req.key, admin.id)
+    organization_id = organizations.target_for(admin, req.organization_id)
+    slide_id, created = service.import_from_storage(req.key, admin.id, organization_id=organization_id)
     if created:
         resources.ingest_pool.submit(ingest.ingest, slide_id)
     return ImportFromStorageResponse(slide_id=slide_id, created=created)

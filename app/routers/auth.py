@@ -1,12 +1,21 @@
+from typing import Any
+
 from fastapi import APIRouter, HTTPException, Request, Response, status
 
 from app.core.constants import ACCESS_TOKEN_COOKIE, REFRESH_TOKEN_COOKIE
 from app.dependencies.auth import AccountServiceDep, AuthServiceDep, CurrentUserDep
 from app.dependencies.resources import SessionDep
+from app.models.account import Account
 from app.schemas.auth import LoginRequest, TokenResponse
+from app.schemas.organizations import OrganizationRef
 from app.schemas.user import ProfileSetup
 
 router = APIRouter()
+
+
+def _who(account: Account) -> dict[str, Any]:
+    organization = OrganizationRef.model_validate(account.organization) if account.organization else None
+    return {"role": account.role, "organization": organization}
 
 
 @router.post("/login", response_model=TokenResponse)
@@ -18,13 +27,13 @@ def login(request: LoginRequest, response: Response, auth_service: AuthServiceDe
     if account.is_first_login:
         access_token = auth_service.create_access_token(account.id, account.role.value)
         auth_service.set_token_cookies(response, access_token)
-        return TokenResponse(access_token=access_token, is_first_login=True)
+        return TokenResponse(access_token=access_token, is_first_login=True, **_who(account))
 
     access_token = auth_service.create_access_token(account.id, account.role.value)
     refresh_token_obj = auth_service.create_refresh_token(account.id)
     
     auth_service.set_token_cookies(response, access_token, refresh_token_obj.token)
-    return TokenResponse(access_token=access_token, refresh_token=refresh_token_obj.token)
+    return TokenResponse(access_token=access_token, refresh_token=refresh_token_obj.token, **_who(account))
 
 
 @router.post("/refresh", response_model=TokenResponse)
@@ -43,7 +52,7 @@ def refresh_token(request: Request, response: Response, auth_service: AuthServic
     new_refresh_token_obj = auth_service.create_refresh_token(account.id)
 
     auth_service.set_token_cookies(response, access_token, new_refresh_token_obj.token)
-    return TokenResponse(access_token=access_token, refresh_token=new_refresh_token_obj.token)
+    return TokenResponse(access_token=access_token, refresh_token=new_refresh_token_obj.token, **_who(account))
 
 
 @router.post("/setup-profile", response_model=TokenResponse)
@@ -66,7 +75,7 @@ def setup_profile(
     session.commit()
     
     auth_service.set_token_cookies(response, access_token, refresh_token_obj.token)
-    return TokenResponse(access_token=access_token, refresh_token=refresh_token_obj.token)
+    return TokenResponse(access_token=access_token, refresh_token=refresh_token_obj.token, **_who(account))
 
 
 @router.post("/logout")

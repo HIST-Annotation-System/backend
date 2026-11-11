@@ -2,7 +2,6 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.category import Category
-from app.models.group import AnnotationGroup
 
 
 class CategoryGroupRepository:
@@ -24,20 +23,4 @@ class CategoryGroupRepository:
 
     def delete_category(self, category: Category) -> None:
         self._session.delete(category)
-        self._session.flush()
-
-    def get_all_groups(self) -> list[AnnotationGroup]:
-        return list(self._session.execute(select(AnnotationGroup)).scalars().all())
-
-    def get_group_by_id(self, group_id: int) -> AnnotationGroup | None:
-        return self._session.execute(select(AnnotationGroup).where(AnnotationGroup.id == group_id)).scalar_one_or_none()
-
-    def create_group(self, name: str) -> AnnotationGroup:
-        group = AnnotationGroup(name=name)
-        self._session.add(group)
-        self._session.flush()
-        return group
-
-    def delete_group(self, group: AnnotationGroup) -> None:
-        self._session.delete(group)
         self._session.flush()

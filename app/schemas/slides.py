@@ -51,6 +51,7 @@ class SlideRead(BaseModel):
     created_at: datetime
     # Username of the admin who uploaded/imported it - shown while the upload is still running, too.
     uploaded_by: str | None = Field(validation_alias="uploaded_by_name")
+    organization_id: int
 
     @computed_field  # type: ignore[prop-decorator]
     @property
