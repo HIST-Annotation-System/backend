@@ -61,10 +61,15 @@ class AppResources:
 def _build_segmentation_dispatcher(settings: Settings, session_factory: sessionmaker[Session]) -> SegmentationDispatcher:
     celery_app = build_celery_app(settings)
 
-    def publish(hotspot_id: uuid.UUID, image_key: str) -> None:
+    def publish(hotspot_id: uuid.UUID, image_key: str, mpp: float | None) -> None:
         celery_app.send_task(
             TASK_RUN,
-            kwargs={"schema_version": SCHEMA_VERSION, "hotspot_id": str(hotspot_id), "image_key": image_key},
+            kwargs={
+                "schema_version": SCHEMA_VERSION,
+                "hotspot_id": str(hotspot_id),
+                "image_key": image_key,
+                "mpp": mpp,
+            },
             queue=JOBS_QUEUE,
             # A failure is handled by trying again later, and must not block the dispatcher's thread on retries.
             retry=False,

@@ -10,7 +10,6 @@ if TYPE_CHECKING:
 
 CELL_TYPE_NAME_MAX_LENGTH = 128
 CELL_TYPE_NAME_LOWER_INDEX = "uq_cell_types_name_lower"
-# The type of every model cell (the model finds outlines, it does not classify them); seeded by a migration.
 UNCLASSIFIED_CELL_TYPE_NAME = "Unclassified"
 
 

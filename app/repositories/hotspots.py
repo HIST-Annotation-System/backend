@@ -76,11 +76,11 @@ class HotspotRepository:
 
     def claim_pending_segmentations(
         self, requested_before: datetime, limit: int
-    ) -> Sequence[tuple[uuid.UUID, HotspotImageType]]:
-        """(id, image type) of pending hotspots not requested lately, newest first, so current work goes ahead of any
+    ) -> Sequence[tuple[uuid.UUID, HotspotImageType, float | None]]:
+        """(id, image type, mpp) of pending hotspots not requested lately, newest first, so current work goes ahead of any
         backlog. Their rows stay locked until the next commit, and other stacks skip them."""
         rows = self._session.execute(
-            select(Hotspot.id, Hotspot.image_type)
+            select(Hotspot.id, Hotspot.image_type, Hotspot.mpp)
             .where(
                 Hotspot.segmentation_status == SegmentationStatus.PENDING,
                 or_(Hotspot.segmentation_requested_at.is_(None), Hotspot.segmentation_requested_at < requested_before),
@@ -89,7 +89,7 @@ class HotspotRepository:
             .limit(limit)
             .with_for_update(skip_locked=True)
         ).all()
-        return [(hotspot_id, image_type) for hotspot_id, image_type in rows]
+        return [(hotspot_id, image_type, mpp) for hotspot_id, image_type, mpp in rows]
 
     def mark_segmentations_requested(self, hotspot_ids: Sequence[uuid.UUID], requested_at: datetime) -> None:
         """Commits, which also releases the rows of the claim."""

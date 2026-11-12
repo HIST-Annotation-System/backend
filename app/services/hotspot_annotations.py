@@ -46,15 +46,25 @@ class HotspotAnnotationService:
         self._cell_types = cell_types
 
     def list_annotations(self, hotspot_id: uuid.UUID, viewer: Account) -> list[AnnotationRead]:
-        """On a hotspot in layers, an annotator sees the model's cells and their own, an administrator everything."""
+        """On a hotspot in layers, an annotator sees the model's cells and their own, an administrator everything.
+
+        Other people's copies of model cells they have not changed are left out: they only repeat the model's cells.
+        """
         hotspot = require_hotspot(self._hotspots, hotspot_id)
         annotations = self._hotspots.list_annotations(hotspot_id)
+        model_cells = {item.id: item for item in annotations if item.source == AnnotationSource.MODEL}
+        untouched = {
+            item.id
+            for item in annotations
+            if item.origin_id is not None and _is_untouched(item, model_cells.get(item.origin_id))
+        }
+        annotations = [item for item in annotations if item.id not in untouched or item.created_by_id == viewer.id]
         if hotspot.layered and viewer.role not in RATING_MANAGER_ROLES:
             annotations = [
                 item for item in annotations if item.source == AnnotationSource.MODEL or item.created_by_id == viewer.id
             ]
         inside = cells_inside_excluded(annotations)
-        return [_read(item, item.id in inside) for item in annotations]
+        return [_read(item, item.id in inside, item.id in untouched) for item in annotations]
 
     def create_annotation(self, hotspot_id: uuid.UUID, data: AnnotationCreate, author: Account) -> AnnotationRead:
         hotspot = require_hotspot(self._hotspots, hotspot_id)
@@ -104,6 +114,8 @@ class HotspotAnnotationService:
             self._require_cell_type(data.cell_type_id)
             annotation.cell_type_id = data.cell_type_id
         annotation.kind = kind
+        if data.confirmed:
+            annotation.confirmed = True
         if kind == AnnotationKind.EXCLUDED:
             annotation.cell_type_id = None
         if data.curve is not None or data.geometry is not None:
@@ -183,7 +195,10 @@ class HotspotAnnotationService:
             return _read(annotation, False)
         # Only the areas: a hotspot can hold thousands of cells, and this runs on every save.
         areas = self._hotspots.list_excluded_areas(annotation.hotspot_id)
-        return _read(annotation, annotation.id in cells_inside_excluded([*areas, annotation]))
+        origin = self._hotspots.get_annotation(annotation.origin_id) if annotation.origin_id is not None else None
+        return _read(
+            annotation, annotation.id in cells_inside_excluded([*areas, annotation]), _is_untouched(annotation, origin)
+        )
 
     def _require_cell_type(self, cell_type_id: int) -> None:
         if self._cell_types.get(cell_type_id) is None:
@@ -209,10 +224,26 @@ def _require_editable(hotspot: Hotspot, annotation: HotspotAnnotation | None, us
         raise ForbiddenError(NOT_YOUR_LAYER)
 
 
-def _read(annotation: HotspotAnnotation, inside_excluded: bool) -> AnnotationRead:
+def _read(annotation: HotspotAnnotation, inside_excluded: bool, untouched: bool = False) -> AnnotationRead:
     read = AnnotationRead.model_validate(annotation)
     read.inside_excluded = inside_excluded
+    read.untouched = untouched
     return read
+
+
+def _is_untouched(annotation: HotspotAnnotation, origin: HotspotAnnotation | None) -> bool:
+    """Whether a copy of a model cell still waits for its author: they have not confirmed it, and it is as the model
+    made it. Nothing records an edit as such, so the copy is compared with the cell it was copied from."""
+    return (
+        origin is not None
+        and not annotation.confirmed
+        and annotation.source == AnnotationSource.HUMAN
+        and origin.source == AnnotationSource.MODEL
+        and annotation.kind == origin.kind
+        and annotation.cell_type_id == origin.cell_type_id
+        and annotation.geometry == origin.geometry
+        and annotation.curve == origin.curve
+    )
 
 
 def _fit_area(geometry: dict[str, Any], hotspot: Hotspot) -> tuple[dict[str, Any], bool]:

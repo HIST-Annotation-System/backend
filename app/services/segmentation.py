@@ -18,7 +18,7 @@ from pydantic import BaseModel, ValidationError
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.exceptions.errors import AppError
-from app.models.cell_type import UNCLASSIFIED_CELL_TYPE_NAME, CellType
+from app.models.cell_type import CELL_TYPE_NAME_MAX_LENGTH, UNCLASSIFIED_CELL_TYPE_NAME
 from app.models.hotspot import AnnotationKind, AnnotationSource, Hotspot, HotspotAnnotation, SegmentationStatus
 from app.repositories.cell_types import CellTypeRepository
 from app.repositories.hotspots import HotspotRepository
@@ -30,7 +30,7 @@ from app.services.storage import ObjectStorage
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 JOBS_QUEUE = "segmentation-jobs"
 RESULTS_QUEUE = "segmentation-results"
 TASK_RUN = "segmentation.run"
@@ -49,7 +49,15 @@ DISPATCH_BATCH_SIZE = 20
 RESULT_UNREADABLE = "The model's result could not be read."
 UNSUPPORTED_SCHEMA = "The backend does not support result format {schema_version}; update the backend or ml-worker."
 
-type PublishJob = Callable[[uuid.UUID, str], None]
+# The hotspot, its image's key, and the image's microns per pixel when known.
+type PublishJob = Callable[[uuid.UUID, str, float | None], None]
+
+
+class Cell(BaseModel):
+    # An open ring of [x, y] in image pixels.
+    ring: list[tuple[float, float]]
+    # The model's name for the cell's type; null when it gave none.
+    cell_type: str | None
 
 
 class SegmentationResult(BaseModel):
@@ -60,8 +68,7 @@ class SegmentationResult(BaseModel):
     model_version: str
     image_width: int
     image_height: int
-    # One open ring per cell, as [x, y] in image pixels.
-    cells: list[list[tuple[float, float]]]
+    cells: list[Cell]
 
 
 class SegmentationDispatcher:
@@ -92,9 +99,11 @@ class SegmentationDispatcher:
             claimed = hotspots.claim_pending_segmentations(moment - SEGMENTATION_RESEND_AFTER, DISPATCH_BATCH_SIZE)
             sent: list[uuid.UUID] = []
             try:
-                for hotspot_id, image_type in claimed:
+                for hotspot_id, image_type, mpp in claimed:
                     self._publish(
-                        hotspot_id, HOTSPOT_IMAGE_KEY.format(hotspot_id=hotspot_id, extension=EXTENSIONS[image_type])
+                        hotspot_id,
+                        HOTSPOT_IMAGE_KEY.format(hotspot_id=hotspot_id, extension=EXTENSIONS[image_type]),
+                        mpp,
                     )
                     sent.append(hotspot_id)
             finally:
@@ -165,7 +174,8 @@ class SegmentationResultService:
             logger.exception("Unreadable segmentation result %s", result_key)
             self._fail(session, hotspot, RESULT_UNREADABLE)
             return
-        cell_type = _unclassified_cell_type(session)
+        cells = _valid_cells(result, hotspot)
+        cell_type_ids = _cell_type_ids(session, {name for _, name in cells})
         session.add_all(
             HotspotAnnotation(
                 id=uuid.uuid4(),
@@ -173,10 +183,10 @@ class SegmentationResultService:
                 kind=AnnotationKind.CELL,
                 source=AnnotationSource.MODEL,
                 model_version=model_version,
-                cell_type_id=cell_type.id,
+                cell_type_id=cell_type_ids[name],
                 geometry=geometry,
             )
-            for geometry in _valid_geometries(result, hotspot)
+            for geometry, name in cells
         )
         hotspot.segmentation_status, hotspot.segmentation_error = SegmentationStatus.DONE, None
         session.commit()
@@ -186,19 +196,25 @@ class SegmentationResultService:
         session.commit()
 
 
-def _unclassified_cell_type(session: Session) -> CellType:
+def _cell_type_ids(session: Session, names: set[str]) -> dict[str, int]:
+    """The id of the cell type with each name. The model's types are matched to existing ones by name (ignoring
+    case) and created when missing, so a model with other classes needs no migration."""
     cell_types = CellTypeRepository(session)
-    # Seeded by a migration and protected from changes; created here if it is gone regardless.
-    return cell_types.get_by_name(UNCLASSIFIED_CELL_TYPE_NAME) or cell_types.create(UNCLASSIFIED_CELL_TYPE_NAME)
+    return {name: (cell_types.get_by_name(name) or cell_types.create(name)).id for name in names}
 
 
-def _valid_geometries(result: SegmentationResult, hotspot: Hotspot) -> list[dict[str, object]]:
-    """Each cell as stored, inside the image. One bad ring is dropped: it must not cost the hotspot its other cells."""
-    geometries: list[dict[str, object]] = []
-    for ring in result.cells:
+def _valid_cells(result: SegmentationResult, hotspot: Hotspot) -> list[tuple[dict[str, object], str]]:
+    """Each cell as stored (its geometry inside the image, and the name of its cell type). One bad cell is dropped:
+    it must not cost the hotspot its other cells."""
+    cells: list[tuple[dict[str, object], str]] = []
+    for cell in result.cells:
+        # Seeded by a migration and protected from changes; `_cell_type_ids` creates it if it is gone regardless.
+        name = (cell.cell_type or "").strip()[:CELL_TYPE_NAME_MAX_LENGTH] or UNCLASSIFIED_CELL_TYPE_NAME
         try:
-            polygon = PolygonGeometry(coordinates=[ring])
-            geometries.append(fit_to_bounds(polygon, float(hotspot.image_width), float(hotspot.image_height)))
+            polygon = PolygonGeometry(coordinates=[cell.ring])
+            geometry = fit_to_bounds(polygon, float(hotspot.image_width), float(hotspot.image_height))
         except (ValidationError, AppError):
             logger.warning("Dropped an invalid model cell on hotspot %s", hotspot.id)
-    return geometries
+            continue
+        cells.append((geometry, name))
+    return cells
