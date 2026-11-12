@@ -106,8 +106,9 @@ def test_start_copies_the_model_cells_into_the_users_own_layer(world: World) -> 
     assert {item.created_by_name for item in copies} == {first.username}
     # The model's cells stay as they were, and the other annotator's copies stay out of sight.
     assert all(item.created_by_id is None for item in world.model_cells)
+    # An administrator gets the model's cells once, not again with each annotator's unchanged copy of them.
     everything = world.annotations.list_annotations(world.hotspot.id, world.admin)
-    assert len(everything) == 12
+    assert len(everything) == 4
 
 
 def test_start_waits_for_the_model(world: World) -> None:
@@ -207,3 +208,49 @@ def test_hotspots_annotated_the_old_way_keep_their_manual_mark(world: World) -> 
         world.hotspot.id, world.model_cells[0].id, AnnotationUpdate(cell_type_id=world.types[1].id), world.users[0]
     )
     assert len(world.annotations.list_annotations(world.hotspot.id, world.users[1])) == 4
+
+
+def test_a_copy_of_a_model_cell_is_untouched_until_its_author_changes_it(world: World) -> None:
+    first, second = world.users[:2]
+    world.reannotation.start(world.hotspot.id, first)
+    world.reannotation.start(world.hotspot.id, second)
+    copies = [item for item in world.annotations.list_annotations(world.hotspot.id, first) if item.source != "model"]
+    assert all(item.untouched for item in copies)
+
+    retyped = world.annotations.update_annotation(
+        world.hotspot.id, copies[0].id, AnnotationUpdate(cell_type_id=world.types[1].id), first
+    )
+    moved = world.annotations.update_annotation(
+        world.hotspot.id, copies[1].id, AnnotationUpdate(geometry=PolygonGeometry.model_validate(square(500))), first
+    )
+    drawn = world.annotations.create_annotation(
+        world.hotspot.id,
+        AnnotationCreate(cell_type_id=world.types[0].id, geometry=PolygonGeometry.model_validate(square(700))),
+        first,
+    )
+
+    assert not (retyped.untouched or moved.untouched or drawn.untouched)
+    own = [item for item in world.annotations.list_annotations(world.hotspot.id, first) if item.source != "model"]
+    assert sorted(item.id for item in own if not item.untouched) == sorted([retyped.id, moved.id, drawn.id])
+    assert len([item for item in own if item.untouched]) == 2
+    # An administrator sees what each annotator changed, not everyone's unchanged copies of the model's cells.
+    everything = world.annotations.list_annotations(world.hotspot.id, world.admin)
+    assert len([item for item in everything if item.source != "model"]) == 3
+    assert not any(item.untouched for item in everything)
+
+
+def test_confirming_a_copy_of_a_model_cell_counts_as_dealing_with_it(world: World) -> None:
+    user = world.users[0]
+    world.reannotation.start(world.hotspot.id, user)
+    copy = next(item for item in world.annotations.list_annotations(world.hotspot.id, user) if item.untouched)
+    assert copy.origin_id in {cell.id for cell in world.model_cells}
+
+    confirmed = world.annotations.update_annotation(world.hotspot.id, copy.id, AnnotationUpdate(confirmed=True), user)
+
+    assert not confirmed.untouched
+    assert (confirmed.geometry, confirmed.cell_type_id) == (copy.geometry, copy.cell_type_id)
+    own = [item for item in world.annotations.list_annotations(world.hotspot.id, user) if item.source != "model"]
+    assert [item.id for item in own if not item.untouched] == [copy.id]
+    # Someone else now sees it as that annotator's work.
+    everything = world.annotations.list_annotations(world.hotspot.id, world.admin)
+    assert [item.id for item in everything if item.source != "model"] == [copy.id]

@@ -3,7 +3,7 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, String, Text, UniqueConstraint, func, select, true
+from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, String, Text, UniqueConstraint, false, func, select, true
 from sqlalchemy.orm import Mapped, column_property, mapped_column, relationship
 
 if TYPE_CHECKING:
@@ -225,6 +225,8 @@ class HotspotAnnotation(Base):
     origin_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("hotspot_annotations.id", ondelete="SET NULL"), index=True
     )
+    # Its author looked at this copy of a model cell and kept it as it is, so it counts as dealt with.
+    confirmed: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
     # Who drew or last changed it; null for untouched model cells, annotations drawn before this was recorded, and
     # once that account is deleted.
     created_by_id: Mapped[int | None] = mapped_column(ForeignKey("accounts.id", ondelete="SET NULL"), index=True)

@@ -150,7 +150,7 @@ Slides are added through the frontend's upload dialog (e.g. `examples/CMU-2.svs`
 
 ## Cell segmentation
 
-Every hotspot, uploaded or cut from a slide, is pre-filled with cell outlines by CellposeSAM. The model runs in the
+Every hotspot, uploaded or cut from a slide, is pre-filled with classified cell outlines by Classpose. The model runs in the
 separate `ml-worker` repository, whose README has the setup and the contract between the two.
 
 **It is optional.** With `SEGMENTATION_ENABLED=false`, the default, nothing is sent and hotspots stay `pending`, and
@@ -173,7 +173,9 @@ How it stays out of the way:
 - **Stacks share the work.** All of them see the same database, and claiming a hotspot locks its row, so two stacks don't
   send the same one.
 
-Model cells are annotations with `source = model` and the `Unclassified` cell type, which can't be renamed or deleted.
+Model cells are annotations with `source = model` and the cell type the model predicted: its type names are matched to
+existing cell types, ignoring case, and created when missing. A cell it gave no type gets `Unclassified`, which can't be
+renamed or deleted.
 Editing one makes it `source = human`, credited to the editor. Stats and `annotation_count` only count `human` rows; the
 editor and the GeoJSON export show both. The model's original output stays in `hotspots/{id}/segmentation.json`.
 
