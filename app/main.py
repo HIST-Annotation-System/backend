@@ -17,6 +17,7 @@ from app.routers import (
     cell_types,
     hotspots,
     organizations,
+    priority_weights,
     slides,
     stats,
     storage,
@@ -71,6 +72,9 @@ def create_app() -> FastAPI:
     app.include_router(cell_types.router, prefix=f"{settings.API_V1_STR}/cell-types", tags=["Cell Types"])
     app.include_router(hotspots.router, prefix=settings.API_V1_STR, tags=["Hotspots"])
     app.include_router(tags.router, prefix=f"{settings.API_V1_STR}/tags", tags=["Tags"])
+    app.include_router(
+        priority_weights.router, prefix=f"{settings.API_V1_STR}/priority-weights", tags=["Priority weights"]
+    )
     app.include_router(stats.router, prefix=f"{settings.API_V1_STR}/stats", tags=["Stats"])
 
     @app.get("/health", tags=["Health"])

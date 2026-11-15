@@ -41,7 +41,9 @@ class HotspotFeature(enum.StrEnum):
     ENTROPY = "entropy"
     GLCM_CONTRAST = "glcm_contrast"
     EDGE_DENSITY = "edge_density"
-    COLORFULNESS = "colorfulness"
+    HEMATOXYLIN = "hematoxylin"
+    # Not a sort: the share of the image that is tissue, used to keep empty crops out of the estimated priority.
+    TISSUE_FRACTION = "tissue_fraction"
 
 
 # Must stay >= the longest HotspotImageType value.
@@ -247,6 +249,17 @@ Hotspot.annotation_count = column_property(
         HotspotAnnotation.hotspot_id == Hotspot.id,
         HotspotAnnotation.kind == AnnotationKind.CELL,
         HotspotAnnotation.source == AnnotationSource.HUMAN,
+    )
+    .correlate_except(HotspotAnnotation)
+    .scalar_subquery()
+)
+# The cells the model found, as it drew them (a layered reannotation copies them, so they stay untouched).
+Hotspot.model_cell_count = column_property(
+    select(func.count(HotspotAnnotation.id))
+    .where(
+        HotspotAnnotation.hotspot_id == Hotspot.id,
+        HotspotAnnotation.kind == AnnotationKind.CELL,
+        HotspotAnnotation.source == AnnotationSource.MODEL,
     )
     .correlate_except(HotspotAnnotation)
     .scalar_subquery()

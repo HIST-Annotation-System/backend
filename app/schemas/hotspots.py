@@ -18,17 +18,20 @@ Name = Annotated[str, StringConstraints(strip_whitespace=True, min_length=NAME_M
 
 
 class HotspotSort(enum.StrEnum):
-    """What the catalog is ordered by: creation time, one of the HotspotFeature descriptors, the summed tag
-    weights, or the weight of the importance/accuracy tag."""
+    """What the catalog is ordered by. For unrated hotspots: creation time, the image descriptors, the model's cell
+    count and density, and the estimated priority. For rated ones: the summed tag weights and the annotators'
+    disagreement (see app.services.priority)."""
 
     CREATED_AT = "created_at"
     ENTROPY = HotspotFeature.ENTROPY.value
     GLCM_CONTRAST = HotspotFeature.GLCM_CONTRAST.value
     EDGE_DENSITY = HotspotFeature.EDGE_DENSITY.value
-    COLORFULNESS = HotspotFeature.COLORFULNESS.value
+    HEMATOXYLIN = HotspotFeature.HEMATOXYLIN.value
+    CELL_COUNT = "cell_count"
+    CELL_DENSITY = "cell_density"
+    ESTIMATED_PRIORITY = "estimated_priority"
     SCORE = "score"
-    IMPORTANCE = "importance"
-    ACCURACY = "accuracy"
+    DISAGREEMENT = "disagreement"
 
 
 class HotspotStatus(enum.StrEnum):

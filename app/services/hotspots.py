@@ -2,7 +2,7 @@ import logging
 import threading
 import uuid
 from collections import OrderedDict
-from collections.abc import Callable, Collection
+from collections.abc import Callable, Collection, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import PurePath
 
@@ -13,9 +13,11 @@ from app.core.constants import NAME_MAX_LENGTH
 from app.exceptions.errors import AppError, ConflictError, InvalidInputError, NotFoundError, StorageError
 from app.models.account import Account
 from app.models.hotspot import Hotspot, HotspotBatch, HotspotBatchStatus, HotspotFeature, HotspotFolder
-from app.models.tag import TagDimension
+from app.models.organization import AgreementMetric
+from app.models.priority_weight import PriorityComponent
 from app.models.slide import Slide
 from app.repositories.hotspots import HotspotRepository
+from app.repositories.priority_weights import PriorityWeightRepository
 from app.repositories.slides import SlideRepository
 from app.schemas.hotspots import (
     BoxFeatures,
@@ -40,6 +42,7 @@ from app.services.hotspot_images import (
     encode_captured,
     render_thumbnail,
 )
+from app.services.priority import cell_count, cell_density, estimated_priorities
 from app.services.slide_analysis import MEDIA_TYPE_JPEG
 from app.services.slides import SlideService, require_slide
 from app.services.storage import ObjectStorage
@@ -80,18 +83,31 @@ def require_hotspot(hotspots: HotspotRepository, hotspot_id: uuid.UUID) -> Hotsp
     return hotspot
 
 
-def _sort_key(sort: HotspotSort) -> Callable[[Hotspot], float | None]:
-    """The value a hotspot is sorted by; None when it has none (no such tag, or a feature not computed)."""
+def _disagreement(hotspot: Hotspot) -> float | None:
+    """How far the annotators are from perfect agreement on the organization's chosen metric; None until they have
+    been compared."""
+    agreement = hotspot.agreement
+    if agreement is None:
+        return None
+    value = agreement.iou if agreement.metric == AgreementMetric.IOU else agreement.kappa
+    return None if value is None else 1 - value
+
+
+def _sort_key(
+    sort: HotspotSort, hotspots: Sequence[Hotspot], weights: Mapping[PriorityComponent, float]
+) -> Callable[[Hotspot], float | None]:
+    """The value a hotspot is sorted by; None when it has none (a feature not computed, no segmentation yet, ...)."""
     if sort == HotspotSort.SCORE:
         return lambda hotspot: hotspot.score
-    if sort in (HotspotSort.IMPORTANCE, HotspotSort.ACCURACY):
-        dimension = TagDimension(sort.value)
-
-        def tag_weight(hotspot: Hotspot) -> float | None:
-            tag = hotspot.dimension_tag(dimension)
-            return None if tag is None else tag.weight
-
-        return tag_weight
+    if sort == HotspotSort.CELL_COUNT:
+        return cell_count
+    if sort == HotspotSort.CELL_DENSITY:
+        return cell_density
+    if sort == HotspotSort.DISAGREEMENT:
+        return _disagreement
+    if sort == HotspotSort.ESTIMATED_PRIORITY:
+        priorities = estimated_priorities(hotspots, weights)
+        return lambda hotspot: priorities.get(hotspot.id)
     return lambda hotspot: (hotspot.features or {}).get(sort.value)
 
 
@@ -118,11 +134,13 @@ class HotspotService:
         slides: SlideRepository,
         slide_service: SlideService,
         storage: ObjectStorage,
+        priority_weights: PriorityWeightRepository,
     ) -> None:
         self._hotspots = hotspots
         self._slides = slides
         self._slide_service = slide_service
         self._storage = storage
+        self._priority_weights = priority_weights
 
     def list_folders(self) -> list[HotspotFolderRead]:
         return [
@@ -159,8 +177,9 @@ class HotspotService:
         tag_ids: Collection[int] = (),
         viewer: Account | None = None,
     ) -> list[HotspotRead]:
-        """Hotspots in the review `status` that carry all `tag_ids`, ordered by creation time, an image feature
-        or their tags (ties and missing values: newest first; hotspots without a value always come last).
+        """Hotspots in the review `status` that carry all `tag_ids`, ordered by creation time, an image feature, the
+        model's cells, their tags or their agreement (ties and missing values: newest first; hotspots without a
+        value always come last).
         """
         hotspots = [
             hotspot
@@ -170,7 +189,7 @@ class HotspotService:
         ]
         self._fill_missing_features(hotspots)
         if sort != HotspotSort.CREATED_AT:
-            key = _sort_key(sort)
+            key = _sort_key(sort, hotspots, self._priority_weights.as_dict())
             known = [hotspot for hotspot in hotspots if key(hotspot) is not None]
             unknown = [hotspot for hotspot in hotspots if key(hotspot) is None]
             # A stable sort keeps the newest-first order among equal values.

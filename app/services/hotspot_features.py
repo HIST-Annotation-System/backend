@@ -5,7 +5,6 @@ keeps the values comparable between hotspots of very different image sizes.
 """
 
 import io
-import math
 from typing import Final
 
 import numpy as np
@@ -20,8 +19,16 @@ GRAY_LEVELS: Final = 256
 GLCM_LEVELS: Final = 32
 # Pixel offsets (dy, dx) the co-occurrence matrix is averaged over: right, down, both diagonals.
 GLCM_OFFSETS: Final = ((0, 1), (1, 0), (1, 1), (1, -1))
-# Weight of the mean opponent color against its spread (Hasler & Süsstrunk, 2003).
-COLORFULNESS_MEAN_WEIGHT: Final = 0.3
+# Stain colors as optical-density vectors (Ruifrok & Johnston, 2001): hematoxylin, eosin, and a residual
+# perpendicular to both.
+_HEMATOXYLIN_OD: Final = np.array([0.650, 0.704, 0.286])
+_EOSIN_OD: Final = np.array([0.072, 0.990, 0.105])
+_RESIDUAL_OD: Final = np.cross(_HEMATOXYLIN_OD, _EOSIN_OD)
+_STAIN_MATRIX_INVERSE: Final = np.linalg.inv(
+    np.stack([v / np.linalg.norm(v) for v in (_HEMATOXYLIN_OD, _EOSIN_OD, _RESIDUAL_OD)])
+)
+# Brighter pixels are blank glass.
+TISSUE_GRAY_MAX: Final = 220
 
 type FloatArray = npt.NDArray[np.float64]
 
@@ -35,7 +42,8 @@ def compute_features(thumbnail: bytes) -> dict[str, float]:
         HotspotFeature.ENTROPY.value: shannon_entropy(gray),
         HotspotFeature.GLCM_CONTRAST.value: glcm_contrast(gray),
         HotspotFeature.EDGE_DENSITY.value: edge_density(gray),
-        HotspotFeature.COLORFULNESS.value: colorfulness(rgb),
+        HotspotFeature.HEMATOXYLIN.value: hematoxylin(rgb),
+        HotspotFeature.TISSUE_FRACTION.value: tissue_fraction(gray),
     }
 
 
@@ -83,11 +91,14 @@ def edge_density(gray: FloatArray) -> float:
     return float(magnitude.mean())
 
 
-def colorfulness(rgb: FloatArray) -> float:
-    """Hasler & Süsstrunk colorfulness: spread and strength of the red-green and yellow-blue opponents."""
-    red, green, blue = rgb[..., 0], rgb[..., 1], rgb[..., 2]
-    red_green = red - green
-    yellow_blue = (red + green) / 2 - blue
-    spread = math.hypot(float(red_green.std()), float(yellow_blue.std()))
-    mean = math.hypot(float(red_green.mean()), float(yellow_blue.mean()))
-    return spread + COLORFULNESS_MEAN_WEIGHT * mean
+def hematoxylin(rgb: FloatArray) -> float:
+    """Mean hematoxylin concentration (the blue-purple nuclear stain) from color deconvolution of the optical density;
+    close to 0 for blank glass."""
+    optical_density = -np.log10((rgb + 1.0) / GRAY_LEVELS)
+    concentration = optical_density @ _STAIN_MATRIX_INVERSE
+    return float(np.clip(concentration[..., 0], 0, None).mean())
+
+
+def tissue_fraction(gray: FloatArray) -> float:
+    """Share of pixels darker than blank glass, 0..1."""
+    return float((gray < TISSUE_GRAY_MAX).mean())

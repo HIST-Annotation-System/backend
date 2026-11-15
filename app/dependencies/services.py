@@ -10,6 +10,7 @@ from app.dependencies.resources import AppResources, ResourcesDep, SessionDep
 from app.repositories.cell_types import CellTypeRepository
 from app.repositories.hotspots import HotspotRepository
 from app.repositories.organizations import OrganizationRepository
+from app.repositories.priority_weights import PriorityWeightRepository
 from app.repositories.slides import SlideRepository
 from app.repositories.stats import StatsRepository
 from app.repositories.tags import TagRepository
@@ -18,6 +19,7 @@ from app.services.hotspot_annotations import HotspotAnnotationService
 from app.services.hotspot_reannotation import HotspotReannotationService
 from app.services.hotspots import HotspotService
 from app.services.organizations import OrganizationService
+from app.services.priority import PriorityWeightService
 from app.services.slide_files import SlideFileService
 from app.services.slide_ingest import SlideIngestService
 from app.services.slide_upload import SlideUploadService
@@ -65,6 +67,7 @@ def _hotspot_service(session: Session, resources: AppResources, scope: int | Non
         SlideRepository(session, scope),
         _slide_service(session, resources, scope),
         resources.storage,
+        PriorityWeightRepository(session),
     )
 
 
@@ -84,6 +87,10 @@ def get_hotspot_reannotation_service(session: SessionDep, scope: OrgScopeDep) ->
 
 def get_tag_service(session: SessionDep, scope: OrgScopeDep) -> TagService:
     return TagService(TagRepository(session), HotspotRepository(session, scope))
+
+
+def get_priority_weight_service(session: SessionDep) -> PriorityWeightService:
+    return PriorityWeightService(PriorityWeightRepository(session))
 
 
 def get_organization_service(session: SessionDep) -> OrganizationService:
@@ -108,6 +115,7 @@ HotspotReannotationServiceDep = Annotated[
     HotspotReannotationService, Depends(get_hotspot_reannotation_service)
 ]
 TagServiceDep = Annotated[TagService, Depends(get_tag_service)]
+PriorityWeightServiceDep = Annotated[PriorityWeightService, Depends(get_priority_weight_service)]
 StatsServiceDep = Annotated[StatsService, Depends(get_stats_service)]
 OrganizationServiceDep = Annotated[OrganizationService, Depends(get_organization_service)]
 StorageBrowserServiceDep = Annotated[StorageBrowserService, Depends(get_storage_browser_service)]
