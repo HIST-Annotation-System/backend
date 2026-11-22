@@ -179,6 +179,19 @@ renamed or deleted.
 Editing one makes it `source = human`, credited to the editor. Stats and `annotation_count` only count `human` rows; the
 editor and the GeoJSON export show both. The model's original output stays in `hotspots/{id}/segmentation.json`.
 
+### The model's uncertainty
+
+The model also reports how sure it is of each cell's outline and type. Every segmentation stores the means over the
+hotspot's cells (`model_outline_confidence`, `model_class_confidence`), and the catalog can sort by the uncertainty
+(1 - confidence) of the outlines, of the cell types, or of both together, most uncertain first.
+
+Hotspots segmented before this have no values. A manager rescores them a folder at a time
+(`POST /hotspot-folders/{id}/confidence-rescore`, the gauge button next to the folder): each segmented hotspot goes to
+the worker once more, only its two means change, and never its cells. Rescores go out after any pending hotspot, at
+most `RESCORES_IN_FLIGHT` at a time, so the queue never grows past what the worker reaches before a job expires. A lost
+rescore is sent again after `SEGMENTATION_RESEND_AFTER`; a failed one, or one whose cells another model version drew,
+ends with `confidence_error` and keeps the old values.
+
 ## API Overview
 
 All endpoints are prefixed with `/api/v1`.

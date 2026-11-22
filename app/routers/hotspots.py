@@ -19,6 +19,7 @@ from app.schemas.annotations import AnnotationCreate, AnnotationRead, Annotation
 from app.schemas.hotspots import (
     BoxFeatures,
     BoxFeaturesRequest,
+    ConfidenceRescoreRead,
     HotspotFolderCreate,
     HotspotBatchCreate,
     HotspotBatchRead,
@@ -64,6 +65,19 @@ def rename_folder(folder_id: uuid.UUID, data: HotspotFolderWrite, service: Hotsp
 @router.delete("/hotspot-folders/{folder_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_folder(folder_id: uuid.UUID, service: HotspotServiceDep) -> None:
     service.delete_folder(folder_id)
+
+
+@router.post(
+    "/hotspot-folders/{folder_id}/confidence-rescore",
+    response_model=ConfidenceRescoreRead,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def rescore_folder_confidence(
+    folder_id: uuid.UUID, service: HotspotServiceDep, _manager: ManagerDep
+) -> ConfidenceRescoreRead:
+    """Sends the folder's segmented hotspots to the model again for its confidence in their cells; the results come
+    in over the next minutes (a few hotspots at a time, after any waiting for their first segmentation)."""
+    return ConfidenceRescoreRead(queued=service.request_confidence_rescore(folder_id))
 
 
 @router.post(

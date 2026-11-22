@@ -61,15 +61,19 @@ class AppResources:
 def _build_segmentation_dispatcher(settings: Settings, session_factory: sessionmaker[Session]) -> SegmentationDispatcher:
     celery_app = build_celery_app(settings)
 
-    def publish(hotspot_id: uuid.UUID, image_key: str, mpp: float | None) -> None:
+    def publish(hotspot_id: uuid.UUID, image_key: str, mpp: float | None, rescore: bool = False) -> None:
+        kwargs: dict[str, object] = {
+            "schema_version": SCHEMA_VERSION,
+            "hotspot_id": str(hotspot_id),
+            "image_key": image_key,
+            "mpp": mpp,
+        }
+        if rescore:
+            # Only when set: a worker from before rescoring rejects an argument it does not know.
+            kwargs["rescore"] = True
         celery_app.send_task(
             TASK_RUN,
-            kwargs={
-                "schema_version": SCHEMA_VERSION,
-                "hotspot_id": str(hotspot_id),
-                "image_key": image_key,
-                "mpp": mpp,
-            },
+            kwargs=kwargs,
             queue=JOBS_QUEUE,
             # A failure is handled by trying again later, and must not block the dispatcher's thread on retries.
             retry=False,

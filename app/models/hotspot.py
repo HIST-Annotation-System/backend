@@ -128,6 +128,17 @@ class Hotspot(Base):
     segmentation_error: Mapped[str | None] = mapped_column(Text)
     # When a stack last sent the job to its worker; null until one has. See app.services.segmentation.
     segmentation_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # How sure the model is of its cells, averaged over them (0..1): of the outlines, and of the cell types (cells it
+    # gave no type left out). Set with every segmentation; null for a hotspot segmented before, until it is rescored.
+    model_outline_confidence: Mapped[float | None]
+    model_class_confidence: Mapped[float | None]
+    # Someone asked for the confidence to be worked out again (a whole folder at a time; see
+    # app.services.segmentation): the image goes to the model once more, and only the two means change.
+    confidence_pending: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+    # When that rescore was last sent to a worker; a lost one is sent again after the usual wait.
+    confidence_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Why the last rescore gave no confidence (another model drew the cells, the image failed, ...).
+    confidence_error: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     tag_links: Mapped[list["HotspotTag"]] = relationship(

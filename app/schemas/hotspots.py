@@ -20,7 +20,8 @@ Name = Annotated[str, StringConstraints(strip_whitespace=True, min_length=NAME_M
 class HotspotSort(enum.StrEnum):
     """What the catalog is ordered by. For unrated hotspots: creation time, the image descriptors, the model's cell
     count and density, and the estimated priority. For rated ones: the summed tag weights and the annotators'
-    disagreement (see app.services.priority)."""
+    disagreement (see app.services.priority). For both: how unsure the model is of its cells, the outlines, the cell
+    types, or the mean of the two (1 - its mean confidence)."""
 
     CREATED_AT = "created_at"
     ENTROPY = HotspotFeature.ENTROPY.value
@@ -32,6 +33,9 @@ class HotspotSort(enum.StrEnum):
     ESTIMATED_PRIORITY = "estimated_priority"
     SCORE = "score"
     DISAGREEMENT = "disagreement"
+    OUTLINE_UNCERTAINTY = "outline_uncertainty"
+    CLASS_UNCERTAINTY = "class_uncertainty"
+    MODEL_UNCERTAINTY = "model_uncertainty"
 
 
 class HotspotStatus(enum.StrEnum):
@@ -54,6 +58,11 @@ class HotspotFolderWrite(BaseModel):
 class HotspotFolderCreate(HotspotFolderWrite):
     # Only the system admin chooses; everyone else creates folders in their own organization.
     organization_id: int | None = None
+
+
+class ConfidenceRescoreRead(BaseModel):
+    # Hotspots of the folder sent to the model again for its confidence (those it has segmented).
+    queued: int
 
 
 class HotspotFolderRead(BaseModel):
@@ -156,4 +165,9 @@ class HotspotRead(BaseModel):
     annotation_count: int
     segmentation_status: SegmentationStatus
     segmentation_error: str | None
+    # The model's confidence averaged over its cells, 0..1; null until it has reported it.
+    model_outline_confidence: float | None = None
+    model_class_confidence: float | None = None
+    # A rescore of that confidence was asked for and has not come back yet.
+    confidence_pending: bool = False
     created_at: datetime

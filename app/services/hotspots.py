@@ -93,6 +93,20 @@ def _disagreement(hotspot: Hotspot) -> float | None:
     return None if value is None else 1 - value
 
 
+def _uncertainty(confidence: float | None) -> float | None:
+    return None if confidence is None else 1 - confidence
+
+
+def _model_uncertainty(hotspot: Hotspot) -> float | None:
+    """How unsure the model is of its outlines and its cell types together: the mean of what is known of the two."""
+    known = [
+        value
+        for value in (_uncertainty(hotspot.model_outline_confidence), _uncertainty(hotspot.model_class_confidence))
+        if value is not None
+    ]
+    return sum(known) / len(known) if known else None
+
+
 def _sort_key(
     sort: HotspotSort, hotspots: Sequence[Hotspot], weights: Mapping[PriorityComponent, float]
 ) -> Callable[[Hotspot], float | None]:
@@ -105,6 +119,12 @@ def _sort_key(
         return cell_density
     if sort == HotspotSort.DISAGREEMENT:
         return _disagreement
+    if sort == HotspotSort.OUTLINE_UNCERTAINTY:
+        return lambda hotspot: _uncertainty(hotspot.model_outline_confidence)
+    if sort == HotspotSort.CLASS_UNCERTAINTY:
+        return lambda hotspot: _uncertainty(hotspot.model_class_confidence)
+    if sort == HotspotSort.MODEL_UNCERTAINTY:
+        return _model_uncertainty
     if sort == HotspotSort.ESTIMATED_PRIORITY:
         priorities = estimated_priorities(hotspots, weights)
         return lambda hotspot: priorities.get(hotspot.id)
@@ -399,6 +419,12 @@ class HotspotService:
             hotspot_count=hotspot_count,
             created_at=folder.created_at,
         )
+
+    def request_confidence_rescore(self, folder_id: uuid.UUID) -> int:
+        """Sends the folder's segmented hotspots to the model again, only for its confidence in their cells (see
+        app.services.segmentation); returns how many. Their cells, and the annotators' work, are left alone."""
+        self._require_folder(folder_id)
+        return self._hotspots.request_rescores(folder_id)
 
     def _require_folder(self, folder_id: uuid.UUID) -> HotspotFolder:
         folder = self._hotspots.get_folder(folder_id)

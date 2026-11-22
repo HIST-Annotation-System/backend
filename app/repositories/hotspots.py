@@ -3,11 +3,12 @@ from collections.abc import Sequence
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import Select, func, or_, select, update
+from sqlalchemy import ColumnElement, Select, exists, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from app.models.hotspot import (
     AnnotationKind,
+    AnnotationSource,
     Hotspot,
     HotspotAnnotation,
     HotspotBatch,
@@ -98,6 +99,81 @@ class HotspotRepository:
                 update(Hotspot).where(Hotspot.id.in_(hotspot_ids)).values(segmentation_requested_at=requested_at)
             )
         self._session.commit()
+
+    @staticmethod
+    def _has_model_cells() -> ColumnElement[bool]:
+        return exists().where(
+            HotspotAnnotation.hotspot_id == Hotspot.id,
+            HotspotAnnotation.kind == AnnotationKind.CELL,
+            HotspotAnnotation.source == AnnotationSource.MODEL,
+        )
+
+    def request_rescores(self, folder_id: uuid.UUID) -> int:
+        """Marks every segmented hotspot of the folder that has the model's cells for a rescore of its confidence;
+        returns how many. Committed."""
+        result = self._session.execute(
+            update(Hotspot)
+            .where(
+                Hotspot.folder_id == folder_id,
+                Hotspot.segmentation_status == SegmentationStatus.DONE,
+                self._has_model_cells(),
+            )
+            .values(confidence_pending=True, confidence_requested_at=None, confidence_error=None)
+            .execution_options(synchronize_session=False)
+        )
+        self._session.commit()
+        return int(result.rowcount or 0)  # type: ignore[attr-defined]
+
+    def count_rescores_in_flight(self, requested_after: datetime) -> int:
+        """Rescores sent since `requested_after` whose answer has not come yet."""
+        return (
+            self._session.scalar(
+                select(func.count(Hotspot.id)).where(
+                    Hotspot.confidence_pending.is_(True), Hotspot.confidence_requested_at >= requested_after
+                )
+            )
+            or 0
+        )
+
+    def claim_rescores(
+        self, requested_before: datetime, limit: int
+    ) -> Sequence[tuple[uuid.UUID, HotspotImageType, float | None]]:
+        """(id, image type, mpp) of hotspots waiting for a rescore and not sent lately, newest first. Locked like
+        `claim_pending_segmentations`."""
+        rows = self._session.execute(
+            select(Hotspot.id, Hotspot.image_type, Hotspot.mpp)
+            .where(
+                Hotspot.confidence_pending.is_(True),
+                Hotspot.segmentation_status == SegmentationStatus.DONE,
+                or_(Hotspot.confidence_requested_at.is_(None), Hotspot.confidence_requested_at < requested_before),
+            )
+            .order_by(Hotspot.created_at.desc())
+            .limit(limit)
+            .with_for_update(skip_locked=True)
+        ).all()
+        return [(hotspot_id, image_type, mpp) for hotspot_id, image_type, mpp in rows]
+
+    def mark_rescores_requested(self, hotspot_ids: Sequence[uuid.UUID], requested_at: datetime) -> None:
+        """Commits, which also releases the rows of the claim."""
+        if hotspot_ids:
+            self._session.execute(
+                update(Hotspot).where(Hotspot.id.in_(hotspot_ids)).values(confidence_requested_at=requested_at)
+            )
+        self._session.commit()
+
+    def model_versions(self, hotspot_id: uuid.UUID) -> set[str | None]:
+        """The model versions of the hotspot's own model cells."""
+        return set(
+            self._session.scalars(
+                select(HotspotAnnotation.model_version)
+                .where(
+                    HotspotAnnotation.hotspot_id == hotspot_id,
+                    HotspotAnnotation.kind == AnnotationKind.CELL,
+                    HotspotAnnotation.source == AnnotationSource.MODEL,
+                )
+                .distinct()
+            )
+        )
 
     def skip_pending_segmentation(self, hotspot_id: uuid.UUID) -> None:
         """Conditional in the database, so it can't overwrite a result saved a moment ago. Not committed here."""

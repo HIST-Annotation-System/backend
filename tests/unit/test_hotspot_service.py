@@ -193,6 +193,20 @@ class TestListing:
         ordered = world.service.list_hotspots(None, sort=HotspotSort.CELL_COUNT)
         assert [h.id for h in ordered] == [done.id, pending.id]
 
+    def test_sort_by_the_models_uncertainty_puts_the_least_sure_first(self, world: World) -> None:
+        unsure_outlines = world.hotspot(0, model_outline_confidence=0.5, model_class_confidence=0.9)
+        unsure_types = world.hotspot(1, model_outline_confidence=0.9, model_class_confidence=0.3)
+        sure = world.hotspot(2, model_outline_confidence=0.95, model_class_confidence=0.95)
+        unknown = world.hotspot(3)
+
+        def ids(sort: HotspotSort) -> list[Any]:
+            return [h.id for h in world.service.list_hotspots(None, sort=sort)]
+
+        assert ids(HotspotSort.OUTLINE_UNCERTAINTY) == [unsure_outlines.id, unsure_types.id, sure.id, unknown.id]
+        assert ids(HotspotSort.CLASS_UNCERTAINTY) == [unsure_types.id, unsure_outlines.id, sure.id, unknown.id]
+        # Mean uncertainty: (0.1 + 0.7) / 2 = 0.4 against (0.5 + 0.1) / 2 = 0.3.
+        assert ids(HotspotSort.MODEL_UNCERTAINTY) == [unsure_types.id, unsure_outlines.id, sure.id, unknown.id]
+
 
 class TestUpdateAndDelete:
     def test_rename_and_move_within_the_organization(self, world: World) -> None:
