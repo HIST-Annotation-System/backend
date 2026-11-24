@@ -150,6 +150,8 @@ class SlideService:
             # the local slide file - already required to be present for tiles - instead of leaving the
             # slide permanently thumbnail-less.
             thumbnail = render_thumbnail(self._open(slide_id).slide, slide.tissue_bbox)
+            # Waits for a delete in progress (it holds the row), so its cleanup isn't undone by this upload.
+            require_slide(self._slides, slide_id, for_update=True)
             self._storage.put_bytes(key, thumbnail, MEDIA_TYPE_JPEG)
             return thumbnail
 

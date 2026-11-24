@@ -78,6 +78,18 @@ require_manager = RequireRole(Role.ADMIN, Role.ORG_ADMIN)
 ManagerDep = Annotated[Account, Depends(require_manager)]
 
 
+def require_upload(current_user: CurrentUserDep) -> Account:
+    """Administrators, and the annotators given "can upload files" (the profile's `can_upload`)."""
+    if current_user.role in (Role.ADMIN, Role.ORG_ADMIN):
+        return current_user
+    if current_user.profile is None or not current_user.profile.can_upload:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not enough privileges")
+    return current_user
+
+
+UploaderDep = Annotated[Account, Depends(require_upload)]
+
+
 def get_org_scope(current_user: CurrentUserDep) -> int | None:
     """The only organization whose data the user may see, or None for the system admin (sees all of them)."""
     if current_user.role == Role.ADMIN:

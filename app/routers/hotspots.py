@@ -5,7 +5,7 @@ from fastapi import APIRouter, Query, Response, UploadFile, status
 from fastapi.responses import JSONResponse
 
 from app.core.constants import CONTENT_DISPOSITION_ATTACHMENT, MEDIA_TYPE_GEOJSON
-from app.dependencies.auth import CurrentUserDep, ManagerDep
+from app.dependencies.auth import CurrentUserDep, ManagerDep, UploaderDep
 from app.dependencies.resources import ResourcesDep
 from app.dependencies.services import (
     HotspotAnnotationServiceDep,
@@ -83,7 +83,9 @@ def rescore_folder_confidence(
 @router.post(
     "/hotspot-folders/{folder_id}/images", response_model=HotspotRead, status_code=status.HTTP_201_CREATED
 )
-def upload_hotspot_image(folder_id: uuid.UUID, file: UploadFile, service: HotspotServiceDep) -> HotspotRead:
+def upload_hotspot_image(
+    folder_id: uuid.UUID, file: UploadFile, service: HotspotServiceDep, _uploader: UploaderDep
+) -> HotspotRead:
     """One PNG/JPEG file becomes a hotspot in the folder (the browser uploads several files one by one)."""
     # One byte past the limit is enough to tell an oversized file apart without reading all of it.
     data = file.file.read(UPLOAD_MAX_BYTES + 1)

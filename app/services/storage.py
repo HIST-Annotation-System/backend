@@ -13,7 +13,7 @@ from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
 
 from app.core.config import Settings
-from app.exceptions.errors import StorageError
+from app.exceptions.errors import StorageError, StorageObjectMissing
 
 if TYPE_CHECKING:
     from mypy_boto3_s3 import S3Client
@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 
 PRESIGNED_URL_EXPIRATION_SECONDS = 3600
 STORAGE_UNAVAILABLE = "Object storage is unavailable."
+STORAGE_OBJECT_MISSING = "The file is not in object storage."
 # Generous enough that a single request covers a normal-sized bucket level; the browser pages via next_token.
 BROWSE_PAGE_SIZE = 500
 
@@ -87,7 +88,16 @@ def _storage_errors() -> Generator[None]:
     """Log storage failures and turn them into StorageError (clients only get a generic message)."""
     try:
         yield
-    except (BotoCoreError, ClientError) as exc:
+    except ClientError as exc:
+        # HEAD answers a bare 404 (code "404"); GET says NoSuchKey; multipart calls say NoSuchUpload.
+        # A missing bucket is a broken setup, not a missing file.
+        error = exc.response.get("Error", {}).get("Code")
+        if exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode") == 404 and error != "NoSuchBucket":
+            logger.warning("Object storage has no such object: %s", exc)
+            raise StorageObjectMissing(STORAGE_OBJECT_MISSING) from exc
+        logger.error("Object storage operation failed: %s", exc)
+        raise StorageError(STORAGE_UNAVAILABLE) from exc
+    except BotoCoreError as exc:
         logger.error("Object storage operation failed: %s", exc)
         raise StorageError(STORAGE_UNAVAILABLE) from exc
 

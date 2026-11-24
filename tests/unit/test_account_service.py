@@ -37,39 +37,39 @@ def world(session: Session, settings: Settings, factory: Factory) -> World:
 class TestCreateAccount:
     def test_org_admin_creates_an_annotator_in_their_organization(self, world: World) -> None:
         account = world.service.create_account(
-            world.org_admin, AccountCreate(username="new", password="pw", can_upload=True), world.org.id
+            world.org_admin, AccountCreate(username="new", password="password1", can_upload=True), world.org.id
         )
         assert account.organization_id == world.org.id
         assert account.is_first_login
-        assert world.auth.verify_password("pw", account.hashed_password)
+        assert world.auth.verify_password("password1", account.hashed_password)
         world.session.refresh(account)
         assert account.profile.can_upload is True
 
     def test_org_admin_may_create_another_org_admin(self, world: World) -> None:
         account = world.service.create_account(
-            world.org_admin, AccountCreate(username="new", password="pw", role=Role.ORG_ADMIN), world.org.id
+            world.org_admin, AccountCreate(username="new", password="password1", role=Role.ORG_ADMIN), world.org.id
         )
         assert account.role == Role.ORG_ADMIN
 
     def test_org_admin_may_not_create_a_system_admin(self, world: World) -> None:
         with pytest.raises(ForbiddenError, match="ADMIN"):
             world.service.create_account(
-                world.org_admin, AccountCreate(username="new", password="pw", role=Role.ADMIN), world.org.id
+                world.org_admin, AccountCreate(username="new", password="password1", role=Role.ADMIN), world.org.id
             )
 
     def test_system_admin_has_no_organization(self, world: World) -> None:
         account = world.service.create_account(
-            world.admin, AccountCreate(username="root2", password="pw", role=Role.ADMIN), world.org.id
+            world.admin, AccountCreate(username="root2", password="password1", role=Role.ADMIN), world.org.id
         )
         assert account.organization_id is None
 
     def test_member_needs_an_organization(self, world: World) -> None:
         with pytest.raises(InvalidInputError, match="need an organization"):
-            world.service.create_account(world.admin, AccountCreate(username="x", password="pw"), None)
+            world.service.create_account(world.admin, AccountCreate(username="x", password="password1"), None)
 
     def test_username_must_be_free(self, world: World) -> None:
         with pytest.raises(ConflictError, match="already registered"):
-            world.service.create_account(world.admin, AccountCreate(username="anna", password="pw"), world.org.id)
+            world.service.create_account(world.admin, AccountCreate(username="anna", password="password1"), world.org.id)
 
 
 class TestSetupProfile:
@@ -78,37 +78,37 @@ class TestSetupProfile:
         world.session.add(category)
         account = world.factory.account(Role.ANNOTATOR, world.org, is_first_login=True)
         world.service.setup_profile(
-            account.id, ProfileSetup(new_password="new-pw", first_name="Ada", last_name="L", category_ids=[category.id])
+            account.id, ProfileSetup(new_password="new-password", first_name="Ada", last_name="L", category_ids=[category.id])
         )
         assert not account.is_first_login
-        assert world.auth.verify_password("new-pw", account.hashed_password)
+        assert world.auth.verify_password("new-password", account.hashed_password)
         assert (account.profile.first_name, account.profile.last_name) == ("Ada", "L")
         assert [c.name for c in account.profile.categories] == ["Breast"]
 
     def test_creates_a_missing_profile(self, world: World) -> None:
         account = world.factory.account(Role.ANNOTATOR, world.org, is_first_login=True, with_profile=False)
-        world.service.setup_profile(account.id, ProfileSetup(new_password="pw", first_name="A", last_name="B"))
+        world.service.setup_profile(account.id, ProfileSetup(new_password="password1", first_name="A", last_name="B"))
         assert account.profile.first_name == "A"
         assert account.profile.can_upload is False
 
     def test_only_once(self, world: World) -> None:
         with pytest.raises(ConflictError, match="already setup"):
             world.service.setup_profile(
-                world.annotator.id, ProfileSetup(new_password="pw", first_name="A", last_name="B")
+                world.annotator.id, ProfileSetup(new_password="password1", first_name="A", last_name="B")
             )
 
     def test_unknown_account(self, world: World) -> None:
         with pytest.raises(NotFoundError):
-            world.service.setup_profile(9999, ProfileSetup(new_password="pw", first_name="A", last_name="B"))
+            world.service.setup_profile(9999, ProfileSetup(new_password="password1", first_name="A", last_name="B"))
 
 
 class TestUpdateProfile:
     def test_annotator_edits_their_own_names_and_password(self, world: World) -> None:
         world.service.update_profile(
-            world.annotator, world.annotator.id, ProfileUpdate(first_name="Anna", password="secret")
+            world.annotator, world.annotator.id, ProfileUpdate(first_name="Anna", password="secret-pw")
         )
         assert world.annotator.profile.first_name == "Anna"
-        assert world.auth.verify_password("secret", world.annotator.hashed_password)
+        assert world.auth.verify_password("secret-pw", world.annotator.hashed_password)
 
     def test_annotator_cannot_grant_themselves_uploads(self, world: World) -> None:
         world.service.update_profile(world.annotator, world.annotator.id, ProfileUpdate(can_upload=True))

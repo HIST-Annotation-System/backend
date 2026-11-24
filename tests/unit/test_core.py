@@ -18,6 +18,7 @@ from app.exceptions.errors import (
     InvalidInputError,
     NotFoundError,
     StorageError,
+    StorageObjectMissing,
     register_exception_handlers,
 )
 
@@ -120,6 +121,7 @@ class TestErrors:
             (ForbiddenError, 403),
             (InvalidInputError, 422),
             (StorageError, 502),
+            (StorageObjectMissing, 404),
         ],
     )
     def test_each_error_maps_to_its_status(self, error: type[AppError], status: int) -> None:

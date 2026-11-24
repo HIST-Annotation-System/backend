@@ -94,7 +94,8 @@ class SlideUploadService:
 
     def report_progress(self, slide_id: uuid.UUID, percent: int) -> None:
         """Upload progress from the uploading browser, so every other client can show it too."""
-        slide = self._uploading_slide(slide_id)
+        # Row-locked like complete_upload: a cancel or delete running meanwhile ends in 404, not a failed UPDATE.
+        slide = self._uploading_slide(slide_id, for_update=True)
         slide.ingest_progress = percent
         self._slides.save(slide)
 

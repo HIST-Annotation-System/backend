@@ -79,8 +79,14 @@ def setup_profile(
 
 
 @router.post("/logout")
-def logout(response: Response, current_user: CurrentUserDep) -> dict[str, str]:
+def logout(
+    request: Request, response: Response, current_user: CurrentUserDep, auth_service: AuthServiceDep, session: SessionDep
+) -> dict[str, str]:
+    # Revoked, so a copy of the cookie can't sign in again after the user signed out.
+    refresh_token_str = request.cookies.get(REFRESH_TOKEN_COOKIE)
+    if refresh_token_str:
+        auth_service.revoke_refresh_token(refresh_token_str)
+        session.commit()
     response.delete_cookie(ACCESS_TOKEN_COOKIE)
     response.delete_cookie(REFRESH_TOKEN_COOKIE)
-    #TODO: In a full implementation, we would also revoke the refresh token if passed.
     return {"status": "ok"}

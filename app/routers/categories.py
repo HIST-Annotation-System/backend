@@ -14,7 +14,7 @@ RequireAdmin = Annotated[CurrentUserDep, Depends(RequireRole(Role.ADMIN))]
 
 
 @router.get("/", response_model=list[CategoryResponse])
-def get_categories(repo: CategoryGroupRepositoryDep) -> list[CategoryResponse]:
+def get_categories(repo: CategoryGroupRepositoryDep, _user: CurrentUserDep) -> list[CategoryResponse]:
     return repo.get_all_categories()
 
 

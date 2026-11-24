@@ -5,7 +5,14 @@ import pytest
 from fastapi import HTTPException
 from starlette.requests import Request
 
-from app.dependencies.auth import RequireRole, get_current_user, get_org_scope, require_admin, require_manager
+from app.dependencies.auth import (
+    RequireRole,
+    get_current_user,
+    get_org_scope,
+    require_admin,
+    require_manager,
+    require_upload,
+)
 from app.models import Role
 
 
@@ -80,6 +87,30 @@ class TestRequireRole:
         RequireRole(Role.ANNOTATOR)(user(Role.ANNOTATOR))
         with pytest.raises(HTTPException):
             RequireRole()(user(Role.ADMIN))
+
+
+def uploader(role: Role, can_upload: bool | None) -> Any:
+    """`can_upload=None` stands for an account without a profile."""
+    account = user(role)
+    account.profile = None if can_upload is None else SimpleNamespace(can_upload=can_upload)
+    return account
+
+
+class TestRequireUpload:
+    @pytest.mark.parametrize("role", [Role.ADMIN, Role.ORG_ADMIN])
+    def test_administrators_may_upload_without_the_flag(self, role: Role) -> None:
+        account = uploader(role, False)
+        assert require_upload(account) is account
+
+    def test_annotator_with_the_flag_may_upload(self) -> None:
+        account = uploader(Role.ANNOTATOR, True)
+        assert require_upload(account) is account
+
+    @pytest.mark.parametrize("can_upload", [False, None])
+    def test_annotator_without_the_flag_may_not(self, can_upload: bool | None) -> None:
+        with pytest.raises(HTTPException) as error:
+            require_upload(uploader(Role.ANNOTATOR, can_upload))
+        assert error.value.status_code == 403
 
 
 class TestOrgScope:

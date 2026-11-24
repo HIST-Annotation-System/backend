@@ -38,6 +38,12 @@ class StorageError(AppError):
     status_code = status.HTTP_502_BAD_GATEWAY
 
 
+class StorageObjectMissing(StorageError):
+    """The object (or multipart upload) is not in the bucket: the storage itself answered."""
+
+    status_code = status.HTTP_404_NOT_FOUND
+
+
 def _app_error_handler(request: Request, exc: Exception) -> JSONResponse:
     if not isinstance(exc, AppError):
         raise exc
