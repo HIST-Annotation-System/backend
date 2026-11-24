@@ -30,18 +30,29 @@ from app.services.tags import TagService
 
 
 def _slide_files(resources: AppResources) -> SlideFileService:
-    return SlideFileService(resources.storage, resources.settings.SLIDE_CACHE_DIR, resources.slide_download_locks)
+    return SlideFileService(
+        resources.storage,
+        resources.settings.SLIDE_CACHE_DIR,
+        resources.slide_download_locks,
+        resources.slide_handles.ids,
+    )
 
 
 # Request-scoped services see only the current user's organization (`OrgScopeDep`, None for the system admin);
 # background work builds them unscoped.
 def get_slide_service(session: SessionDep, resources: ResourcesDep, scope: OrgScopeDep) -> SlideService:
-    return _slide_service(session, resources, scope)
+    return _slide_service(session, resources, scope, in_request=True)
 
 
-def _slide_service(session: Session, resources: AppResources, scope: int | None) -> SlideService:
+def _slide_service(session: Session, resources: AppResources, scope: int | None, in_request: bool) -> SlideService:
+    # Requests never wait for a slide download: it runs on the ingest pool while they answer 503.
+    download_pool = resources.ingest_pool if in_request else None
     return SlideService(
-        SlideRepository(session, scope), resources.storage, _slide_files(resources), resources.slide_handles
+        SlideRepository(session, scope),
+        resources.storage,
+        _slide_files(resources),
+        resources.slide_handles,
+        download_pool,
     )
 
 
@@ -58,14 +69,16 @@ def get_cell_type_service(session: SessionDep) -> CellTypeService:
 
 
 def get_hotspot_service(session: SessionDep, resources: ResourcesDep, scope: OrgScopeDep) -> HotspotService:
-    return _hotspot_service(session, resources, scope)
+    return _hotspot_service(session, resources, scope, in_request=True)
 
 
-def _hotspot_service(session: Session, resources: AppResources, scope: int | None = None) -> HotspotService:
+def _hotspot_service(
+    session: Session, resources: AppResources, scope: int | None = None, in_request: bool = False
+) -> HotspotService:
     return HotspotService(
         HotspotRepository(session, scope),
         SlideRepository(session, scope),
-        _slide_service(session, resources, scope),
+        _slide_service(session, resources, scope, in_request),
         resources.storage,
         PriorityWeightRepository(session),
     )

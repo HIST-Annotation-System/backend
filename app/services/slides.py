@@ -1,13 +1,14 @@
 import threading
 import uuid
 from collections import OrderedDict
+from concurrent.futures import Executor
 from dataclasses import dataclass
 
 import openslide
 from openslide.deepzoom import DeepZoomGenerator
 from PIL import Image
 
-from app.exceptions.errors import ConflictError, InvalidInputError, NotFoundError, StorageError
+from app.exceptions.errors import ConflictError, InvalidInputError, NotFoundError, SlidePreparingError, StorageError
 from app.models.slide import Slide, SlideStatus
 from app.repositories.slides import SlideRepository
 from app.schemas.slides import REGION_MAX_SIZE, RegionQuery, SlideDetail, SlideRead, slide_version
@@ -38,6 +39,8 @@ SLIDE_MODIFIED = "Slide {slide_id} was changed by someone else in the meantime (
 SLIDE_NOT_FOUND_CODE = "slide_not_found"
 SLIDE_MODIFIED_CODE = "slide_modified"
 SLIDE_NOT_READY = "Slide {slide_id} is not ready (status: {status})."
+SLIDE_PREPARING = "Slide {slide_id} is being copied to the server; try again in a few seconds."
+SLIDE_PREPARING_CODE = "slide_preparing"
 TILE_NOT_FOUND = "Tile {level}/{col}_{row} does not exist."
 REGION_OUTSIDE_SLIDE = "The requested region lies outside the slide."
 SQUARE_OUTSIDE_SLIDE = "The square must lie wholly inside the slide."
@@ -64,6 +67,10 @@ class SlideHandleCache:
 
     def __len__(self) -> int:
         return len(self._entries)
+
+    def ids(self) -> list[uuid.UUID]:
+        with self._lock:
+            return list(self._entries)
 
     def get(self, slide_id: uuid.UUID) -> OpenedSlide | None:
         with self._lock:
@@ -105,11 +112,15 @@ class SlideService:
         storage: ObjectStorage,
         files: SlideFileService,
         handles: SlideHandleCache,
+        download_pool: Executor | None = None,
     ) -> None:
         self._slides = slides
         self._storage = storage
         self._files = files
         self._handles = handles
+        # Given to request handlers: a slide not on this server's disk yet is then downloaded here in the background
+        # (SlidePreparingError meanwhile) instead of holding a request thread for minutes. Background work waits.
+        self._download_pool = download_pool
 
     def list_slides(self) -> list[SlideRead]:
         return [SlideRead.model_validate(slide) for slide in self._slides.list_all()]
@@ -199,7 +210,11 @@ class SlideService:
             require_slide(self._slides, slide_id)
         opened = self._handles.get(slide_id)
         if opened is None:
-            handle = open_slide_file(self._files.entry_path(require_slide(self._slides, slide_id, ready=True)))
+            slide = require_slide(self._slides, slide_id, ready=True)
+            if self._download_pool is not None and not self._files.is_cached(slide_id):
+                self._files.download_in_background(slide, self._download_pool)
+                raise SlidePreparingError(SLIDE_PREPARING.format(slide_id=slide_id), SLIDE_PREPARING_CODE)
+            handle = open_slide_file(self._files.entry_path(slide))
             deepzoom = DeepZoomGenerator(handle, tile_size=DZI_TILE_SIZE, overlap=DZI_OVERLAP, limit_bounds=True)
             opened = OpenedSlide(slide=handle, deepzoom=deepzoom)
             self._handles.put(slide_id, opened)

@@ -5,7 +5,7 @@ from typing import Any
 import pytest
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.exceptions.errors import ConflictError, InvalidInputError, NotFoundError
+from app.exceptions.errors import ConflictError, InvalidInputError, NotFoundError, SlidePreparingError
 from app.models import Hotspot
 from app.models.hotspot import HotspotImageType, SegmentationStatus
 from app.models.slide import Slide, SlideStatus
@@ -56,11 +56,20 @@ def test_slide_version_is_stable_and_follows_the_name() -> None:
 
 
 class FakeFiles:
+    """No slide is cached."""
+
     def __init__(self) -> None:
         self.purged: list[uuid.UUID] = []
+        self.background: list[uuid.UUID] = []
 
     def purge(self, slide_id: uuid.UUID) -> None:
         self.purged.append(slide_id)
+
+    def is_cached(self, slide_id: uuid.UUID) -> bool:
+        return False
+
+    def download_in_background(self, slide: Slide, pool: Any) -> None:
+        self.background.append(slide.id)
 
 
 class DeletingStorage(MemoryStorage):
@@ -162,6 +171,30 @@ class TestRenameAndDelete:
         assert other.list_slides() == []
         with pytest.raises(NotFoundError):
             other.get_slide(slide.id)
+
+
+class TestUncachedSlide:
+    def service(self, sw: SlideWorld) -> SlideService:
+        return SlideService(sw.repo, sw.storage, sw.files, sw.handles, download_pool=object())  # type: ignore[arg-type]
+
+    def test_a_request_starts_the_download_instead_of_waiting(self, sw: SlideWorld) -> None:
+        slide = sw.slide()
+        with pytest.raises(SlidePreparingError) as error:
+            self.service(sw).get_dzi(slide.id)
+        assert error.value.status_code == 503 and error.value.code == "slide_preparing"
+        assert sw.files.background == [slide.id]
+
+    def test_an_open_slide_needs_no_download(self, sw: SlideWorld) -> None:
+        slide = sw.slide()
+        sw.handles.put(slide.id, opened())
+        assert self.service(sw)._open(slide.id) is sw.handles.get(slide.id)
+        assert sw.files.background == []
+
+    def test_a_slide_that_is_not_ready_is_still_a_conflict(self, sw: SlideWorld) -> None:
+        slide = sw.slide(status=SlideStatus.PROCESSING)
+        with pytest.raises(ConflictError):
+            self.service(sw).get_dzi(slide.id)
+        assert sw.files.background == []
 
 
 class TestUploads:

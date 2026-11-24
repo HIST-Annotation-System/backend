@@ -22,7 +22,8 @@ from app.services.slides import SlideHandleCache
 from app.services.storage import ObjectStorage, ObjectStorageService
 
 # Ingestion is mostly a download plus a short analysis, so two slides uploaded one after another
-# don't have to wait for each other; more would compete with tile serving for CPU and disk.
+# don't have to wait for each other; more would compete with tile serving for CPU and disk. The same pool copies
+# slides that a viewer opens but this server has not cached yet.
 INGEST_POOL_WORKERS = 2
 INGEST_POOL_THREAD_NAME_PREFIX = "ingest"
 # Connections kept open between requests. Over the SSM tunnel a new one takes seconds, and connections beyond the

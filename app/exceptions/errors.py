@@ -10,6 +10,8 @@ class AppError(Exception):
     """Base class for errors raised by services; the API answers with `status_code` and `{detail}`."""
 
     status_code = status.HTTP_400_BAD_REQUEST
+    # Extra response headers, e.g. Retry-After.
+    headers: dict[str, str] | None = None
 
     def __init__(self, message: str, code: str | None = None) -> None:
         super().__init__(message)
@@ -34,6 +36,18 @@ class InvalidInputError(AppError):
     status_code = status.HTTP_422_UNPROCESSABLE_CONTENT
 
 
+class SlidePreparingError(AppError):
+    """The slide is being copied to this server's disk in the background; the client asks again shortly."""
+
+    status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+    # no-store: a CDN in front must not keep answering 503 once the slide is ready.
+    headers = {"Retry-After": "5", "Cache-Control": "no-store"}
+
+
+class InsufficientStorageError(AppError):
+    status_code = status.HTTP_507_INSUFFICIENT_STORAGE
+
+
 class StorageError(AppError):
     status_code = status.HTTP_502_BAD_GATEWAY
 
@@ -53,7 +67,7 @@ def _app_error_handler(request: Request, exc: Exception) -> JSONResponse:
         extra={"path": request.url.path, "status_code": exc.status_code},
     )
     content = {"detail": exc.message} if exc.code is None else {"detail": exc.message, "code": exc.code}
-    return JSONResponse(status_code=exc.status_code, content=content)
+    return JSONResponse(status_code=exc.status_code, content=content, headers=exc.headers)
 
 
 def register_exception_handlers(app: FastAPI) -> None:
