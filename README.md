@@ -1,8 +1,8 @@
 # Backend API (FastAPI)
 
-Backend for the Whole Slide Image (WSI) viewer, built on **FastAPI**. It stores slides in **AWS S3**, keeps
-slide metadata and annotations in **PostgreSQL** (RDS), and serves Deep Zoom
-tiles with **OpenSlide**.
+Backend for the Whole Slide Image (WSI) viewer, built on **FastAPI**. It stores slides in S3-compatible object
+storage (**AWS S3** in production, S3Mock locally), keeps slide metadata and annotations in **PostgreSQL** (RDS in
+production), and serves Deep Zoom tiles with **OpenSlide**.
 Dependency and environment management is handled by **uv**.
 
 ## Directory Structure
@@ -18,7 +18,8 @@ The main application code is located in the `app/` folder:
 - `schemas/` - Pydantic models (DTOs) used for input and output data validation.
 - `services/` - Business logic: uploads, ingestion, Deep Zoom tiling, annotations, object storage.
 
-Database migrations live in `alembic/`, and the Terraform config for the AWS resources in `infra/`.
+Database migrations live in `alembic/`, the Terraform config for the AWS resources in `infra/`, and the production
+deployment in `docker-compose.prod.yml`, `deploy/` and `.github/workflows/`.
 
 ### Statelessness
 
@@ -32,40 +33,32 @@ performance cache that any worker may rebuild at any time.
 - [Docker](https://www.docker.com/) and Docker Compose
 - For running outside Docker: [uv](https://docs.astral.sh/uv/) (OpenSlide binaries come from the `openslide-bin` wheel)
 
-## Installation and Local Setup
+## Local development
 
-1. **Clone the repository** and navigate to the backend folder.
-2. **Provision the AWS resources**, the RDS database and the S3 bucket, by following
-   [`infra/README.md`](infra/README.md). Compose runs the FastAPI service and nothing else - there is no
-   database container, so the stack has to exist first.
-3. **Create a local environment file:**
-   Copy `.env.example` to `.env.local` (the file read by `app/core/config.py`) and fill in the `BUCKET_*` and
-   `POSTGRES_*` values from `terraform output -raw env_local`. Start the database tunnel
-   (`terraform output -raw tunnel_command`, see [Working as a team](#working-as-a-team)) and keep it running. Without a reachable bucket the API still starts
-   but uploads and slide viewing fail, and the log shows which bucket could not be reached; without a reachable
-   database it does not start at all.
-4. **Run the environment using Docker Compose:**
+Everything runs on your machine: `docker-compose.yml` brings its own PostgreSQL, an S3 emulator
+([S3Mock](https://github.com/adobe/S3Mock)) and Redis, so local work never touches the deployed data.
+
+1. **Create the environment file:** `cp .env.example .env.local`. It works as is.
+2. **Start the stack:**
    ```bash
    docker compose up -d --build
    ```
    This starts:
-   - `migrate` - a one-shot container running `alembic upgrade head` against RDS,
+   - `postgres` (published on `localhost:5434`), `s3` (S3Mock on `localhost:9090`, bucket `wsi-slides`) and `redis`
+     (`localhost:6379`, the broker for the optional ml-worker), each keeping its data in a named volume,
+   - `migrate` (`alembic upgrade head`) and `create-admin` (creates `ADMIN_USERNAME` on a fresh database), both one-shot,
    - `api` - the FastAPI server at `http://localhost:8000` (with `--reload` on the mounted source).
 
-   The `ADMIN_USERNAME` account already exists in RDS. On a fresh database, create it once with
-   `docker compose run --rm api python -m scripts.create_admin`.
+   Then `cp .env.example .env.local && npm install && npm run dev` in `frontend/`, and log in with the `ADMIN_*` values.
+3. **Stop it:** `docker compose down` (add `-v` to start over with an empty database and bucket).
 
-   The containers reach RDS through the tunnel on the host: compose overrides `POSTGRES_SERVER` with
-   `host.docker.internal`, so `.env.local` keeps `localhost` for running outside Docker.
-
-5. **Stop the environment:**
-   ```bash
-   docker compose down
-   ```
+`.env.local` holds the addresses as seen from the host; compose gives its containers the service names instead
+(`x-in-docker` in `docker-compose.yml`). The browser uploads straight to S3Mock with presigned URLs signed for
+`BUCKET_PUBLIC_ENDPOINT` (`localhost:9090`), while the API reaches it as `s3:9090`.
 
 ### Running outside Docker
 
-Same `.env.local`, no containers:
+With the stack's `postgres`, `s3` and `redis` running (`docker compose up -d postgres s3 redis`) and the same `.env.local`:
 
 ```bash
 uv sync
@@ -74,41 +67,18 @@ uv run python -m scripts.create_admin     # once: creates the admin account
 uv run uvicorn app.main:app --reload --no-access-log
 ```
 
-## Infrastructure (AWS)
+## Deployment
 
-`infra/` holds the Terraform config for the cloud resources the backend runs on: an RDS PostgreSQL 17 instance,
-the S3 bucket for slides, and an IAM user whose access keys the app uses. It is not optional any more - compose
-has no database service, so the stack has to be applied before the backend can start.
+Production is one EC2 host running `docker-compose.prod.yml` (API, migrations, segmentation consumer) against RDS, S3
+and SQS, behind CloudFront, which also serves the frontend; the GPU worker runs on a separate machine. Every push to
+`main` deploys: `.github/workflows/deploy.yml` builds the ARM image, pushes it to ECR and runs `deploy/deploy.sh` on the
+host through SSM, which applies the migrations first. So **merging to `main` migrates the production database**.
+The workflow reads `AWS_ROLE_ARN`, `ECR_REPOSITORY` and `INSTANCE_ID` from the repository's variables. To roll back,
+run `/opt/wsi/deploy.sh <older image>` on the host (`aws ssm start-session`); ECR keeps the last 10 images.
 
-One thing to know before starting: the region is pinned to `eu-north-1` by an organization SCP that denies every
-other one, so `aws_region` cannot be moved closer to home.
-
-**[`infra/README.md`](infra/README.md) is the deployment guide**: prerequisites, variables, apply, wiring up
-`.env.local`, verification, teardown and troubleshooting.
-
-## Working as a team
-
-One AWS stack, one database, one bucket - there is no per-developer isolation. Slides and annotations
-are shared, and a delete removes them for everyone.
-
-What each person needs:
-
-1. **Their own AWS key pair, and the tunnel running.** The database is reached only through an SSM
-   tunnel that forwards `localhost:15432` to RDS, from any network. Whoever owns the Terraform state adds
-   their name to `developers` once and sends them their key pair plus the `tunnel_command` line;
-   setup on their side is in [`infra/README.md`](infra/README.md#adding-a-teammate). The key pair can
-   open the tunnel and nothing else.
-2. **A copy of `backend/.env.local`.** It is gitignored on purpose: it holds the RDS master password
-   and the IAM secret key. Pass it along out of band, never through the repository.
-
-Then `docker compose up -d --build` in `backend/`, and `cp .env.example .env.local && npm install &&
-npm run dev` in `frontend/`. The `admin` account already exists in RDS - log in with the `ADMIN_*`
-values from `.env.local`.
-
-**Only one person runs Terraform.** `infra/terraform.tfstate` is local and gitignored, so a second
-`terraform apply` from another machine starts from empty state and tries to build everything again,
-failing with `DBInstanceAlreadyExists` and `BucketAlreadyOwnedByYou`. And `terraform destroy` from
-anyone takes the database and every slide with it - see [`infra/README.md`](infra/README.md).
+The AWS resources are Terraform in `infra/`, applied from one machine (its state is local); see
+[`infra/README.md`](infra/README.md). The region is pinned to `eu-north-1` by an organization SCP that denies every
+other one.
 
 ## Slides
 
@@ -252,18 +222,20 @@ uv run alembic check     # fails if models and migrations have drifted
 Application configuration is loaded using `pydantic-settings`.
 Loading priorities:
 1. Environment variables passed via `docker-compose.yml` or system terminal
-2. `.env.local` file
+2. `.env.local` file (locally; production writes the whole file from SSM Parameter Store at each deploy)
 
 The main variables are listed in `.env.example`:
 
 | Variable | Purpose |
 |---|---|
-| `POSTGRES_SERVER`, `POSTGRES_PORT`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` | PostgreSQL connection; `DATABASE_URL` is built from these (see `app/core/config.py`). They point at the SSM tunnel (`localhost:15432`) and come from `terraform output -raw env_local`; compose replaces `POSTGRES_SERVER` with `host.docker.internal` |
-| `BUCKET_ENDPOINT` | S3 regional endpoint; the browser uses the same one, because presigned URLs are signed for it |
+| `POSTGRES_SERVER`, `POSTGRES_PORT`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` | PostgreSQL connection; `DATABASE_URL` is built from these (see `app/core/config.py`) |
+| `BUCKET_ENDPOINT` | Object storage endpoint as the API reaches it |
+| `BUCKET_PUBLIC_ENDPOINT` | Endpoint the browser reaches the bucket at, if different (only locally); presigned URLs are signed for it |
 | `BUCKET_ACCESS_KEY`, `BUCKET_SECRET_KEY`, `BUCKET_NAME`, `BUCKET_REGION` | Object storage credentials, bucket and region |
 | `SLIDE_CACHE_DIR` | Directory holding local copies of slides |
 | `SEGMENTATION_ENABLED` | Send hotspots to the `ml-worker` stack; only on a machine running it (see [Cell segmentation](#cell-segmentation)) |
-| `CELERY_BROKER_URL`, `CELERY_BROKER_TRANSPORT_OPTIONS` | The broker shared with `ml-worker`; the default is its Redis as seen from a container |
+| `CELERY_BROKER_URL`, `CELERY_BROKER_TRANSPORT_OPTIONS` | The broker shared with `ml-worker`: the local stack's Redis, or SQS in production |
+| `COOKIE_SECURE` | Send the auth cookies over HTTPS only; `true` in production |
 
 `docker-compose.yml` loads every service's config straight from `.env.local` via `env_file:`, so
 `docker compose up` needs no `--env-file` flag and can't silently see blank credentials the way

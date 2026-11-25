@@ -69,14 +69,9 @@ class AuthService:
         return self.account_repo.get_by_id(account_id)
 
     def set_token_cookies(self, response: "fastapi.Response", access_token: str, refresh_token: str | None = None) -> None:
-        # TODO: change samesite on prod to 'lax' or 'strict' if they share the same domain.
-        # Currently using 'none' + secure=True for cross-domain requests, 
-        # or 'lax' if it's local development without HTTPS. Let's use lax for local dev compatibility.
-        cookie_kwargs = {
-            "httponly": True,
-            "samesite": "lax",  # TODO: switch to strict/lax for prod, or none+secure if APIs are on different domains
-            "secure": False,    # TODO: set to True in prod when using HTTPS
-        }
+        # The frontend and the API share one origin in prod (CloudFront) and one site locally (localhost), so lax works
+        # in both; only prod is HTTPS.
+        cookie_kwargs = {"httponly": True, "samesite": "lax", "secure": self.settings.COOKIE_SECURE}
         access_max_age = int(timedelta(minutes=self.settings.ACCESS_TOKEN_EXPIRE_MINUTES).total_seconds())
         response.set_cookie(key=ACCESS_TOKEN_COOKIE, value=access_token, max_age=access_max_age, **cookie_kwargs)
         if refresh_token:

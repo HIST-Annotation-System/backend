@@ -9,3 +9,8 @@ examples
 **/__pycache__
 .pytest_cache
 .mypy_cache
+# Terraform's state and variables hold every secret of the cloud stack.
+infra
+tests
+benchmarks
+.github

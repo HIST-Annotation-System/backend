@@ -1,0 +1,22 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [dev]
+  # deploy.yml runs it first on pushes to main.
+  workflow_call:
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.9.26"
+      - run: uv sync --frozen
+      # Settings are read at import time; the local-stack defaults are enough for unit tests (no service is contacted).
+      - run: cp .env.example .env.local
+      # Plain `pytest` would not put the project root on sys.path.
+      - run: uv run --with pytest python -m pytest tests -q

@@ -102,10 +102,10 @@ def _storage_errors() -> Generator[None]:
         raise StorageError(STORAGE_UNAVAILABLE) from exc
 
 
-def _create_client(settings: Settings) -> S3Client:
+def _create_client(settings: Settings, endpoint: str) -> S3Client:
     return boto3.client(
         "s3",
-        endpoint_url=settings.BUCKET_ENDPOINT,
+        endpoint_url=endpoint,
         aws_access_key_id=settings.BUCKET_ACCESS_KEY,
         aws_secret_access_key=settings.BUCKET_SECRET_KEY,
         region_name=settings.BUCKET_REGION,
@@ -117,7 +117,9 @@ class ObjectStorageService:
     """S3 storage. Presigning is offline, so the browser uploads parts straight to the bucket."""
 
     def __init__(self, settings: Settings) -> None:
-        self._client = _create_client(settings)
+        self._client = _create_client(settings, settings.BUCKET_ENDPOINT)
+        # Signs the URLs the browser uses; presigning makes no request, so this client never connects anywhere.
+        self._presigner = _create_client(settings, settings.BUCKET_PUBLIC_ENDPOINT or settings.BUCKET_ENDPOINT)
         self._bucket = settings.BUCKET_NAME
 
     def check_bucket(self) -> None:
@@ -138,7 +140,7 @@ class ObjectStorageService:
     def get_presigned_part_urls(self, key: str, upload_id: str, part_numbers: Iterable[int]) -> dict[int, str]:
         with _storage_errors():
             return {
-                part: self._client.generate_presigned_url(
+                part: self._presigner.generate_presigned_url(
                     ClientMethod="upload_part",
                     Params={"Bucket": self._bucket, "Key": key, "UploadId": upload_id, "PartNumber": part},
                     ExpiresIn=PRESIGNED_URL_EXPIRATION_SECONDS,
@@ -209,7 +211,7 @@ class ObjectStorageService:
 
     def get_presigned_get_url(self, key: str) -> str:
         with _storage_errors():
-            return self._client.generate_presigned_url(
+            return self._presigner.generate_presigned_url(
                 ClientMethod="get_object",
                 Params={"Bucket": self._bucket, "Key": key},
                 ExpiresIn=PRESIGNED_URL_EXPIRATION_SECONDS,

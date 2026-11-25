@@ -25,6 +25,9 @@ class Settings(BaseSettings):
     BUCKET_SECRET_KEY: str
     BUCKET_NAME: str
     BUCKET_REGION: str
+    # The endpoint the *browser* reaches the bucket at, if not BUCKET_ENDPOINT: presigned URLs are signed for it. Only
+    # differs locally, where the API container reaches the S3 emulator by its service name.
+    BUCKET_PUBLIC_ENDPOINT: str | None = None
     
     POSTGRES_SERVER: str = "localhost"
     POSTGRES_PORT: int = 5432
@@ -43,6 +46,8 @@ class Settings(BaseSettings):
     JWT_SECRET: str
     JWT_ALGORITHM: str
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
+    # True wherever the site is served over HTTPS (prod): the browser then sends the auth cookies over HTTPS only.
+    COOKIE_SECURE: bool = False
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
     # The administrator account created by scripts/create_admin.py on first start.
     ADMIN_USERNAME: str

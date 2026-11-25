@@ -108,6 +108,15 @@ class TestCookies:
         assert f"Max-Age={settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60}" in cookies["access_token"]
         assert f"Max-Age={settings.REFRESH_TOKEN_EXPIRE_DAYS * 86400}" in cookies["refresh_token"]
 
+    def test_cookies_are_https_only_where_configured(self, auth: AuthService, settings: Settings) -> None:
+        response = Response()
+        auth.set_token_cookies(response, "acc", "ref")
+        assert all("Secure" not in cookie for cookie in self.cookies(response).values())
+        settings.COOKIE_SECURE = True
+        response = Response()
+        auth.set_token_cookies(response, "acc", "ref")
+        assert all("Secure" in cookie for cookie in self.cookies(response).values())
+
     def test_refresh_cookie_is_optional(self, auth: AuthService) -> None:
         response = Response()
         auth.set_token_cookies(response, "acc")

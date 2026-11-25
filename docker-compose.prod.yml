@@ -1,0 +1,52 @@
+# Production, on the EC2 host (see infra/README.md). deploy/deploy.sh runs it from /opt/wsi; nothing else does.
+# The database (RDS), the bucket (S3) and the broker (SQS) are AWS services, so the only state here is the slide cache,
+# on its own EBS volume at /var/lib/wsi-cache. backend.env comes from SSM Parameter Store, IMAGE from deploy.sh.
+x-backend: &backend
+  image: ${IMAGE:?set by deploy/deploy.sh}
+  env_file: backend.env
+  logging:
+    driver: json-file
+    options:
+      max-size: 10m
+      max-file: "3"
+
+services:
+  migrate:
+    <<: *backend
+    command: [ "alembic", "upgrade", "head" ]
+
+  # Creates the ADMIN_USERNAME account on a fresh database; does nothing once it exists.
+  create-admin:
+    <<: *backend
+    command: [ "python", "-m", "scripts.create_admin" ]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  api:
+    <<: *backend
+    # The image's CMD: a single uvicorn process. Slide download locks, the open-slide cache and cache eviction live in
+    # the process, so several workers would download, open and evict the same slides independently.
+    ports:
+      - "8000:8000"
+    volumes:
+      - /var/lib/wsi-cache:/var/lib/wsi-cache
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')" ]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    depends_on:
+      create-admin:
+        condition: service_completed_successfully
+
+  # Saves the results the GPU worker posts to the segmentation-results queue.
+  segmentation-consumer:
+    <<: *backend
+    command: [ "celery", "-A", "app.segmentation_consumer", "worker", "-Q", "segmentation-results", "--pool=solo", "--concurrency=1", "--without-gossip", "--without-mingle", "--without-heartbeat", "--loglevel=INFO" ]
+    restart: unless-stopped
+    depends_on:
+      migrate:
+        condition: service_completed_successfully

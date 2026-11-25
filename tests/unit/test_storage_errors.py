@@ -1,8 +1,9 @@
 import pytest
 from botocore.exceptions import ClientError, EndpointConnectionError
 
+from app.core.config import Settings
 from app.exceptions.errors import StorageError, StorageObjectMissing
-from app.services.storage import _storage_errors
+from app.services.storage import ObjectStorageService, _storage_errors
 
 
 def client_error(code: str, status: int) -> ClientError:
@@ -28,3 +29,18 @@ def test_other_failures_are_an_outage(error: Exception) -> None:
     with pytest.raises(StorageError) as raised, _storage_errors():
         raise error
     assert type(raised.value) is StorageError
+
+
+def test_presigned_urls_point_where_the_browser_reaches_the_bucket(settings: Settings) -> None:
+    settings.BUCKET_ENDPOINT = "http://s3:9090"
+    settings.BUCKET_PUBLIC_ENDPOINT = "http://localhost:9090"
+    storage = ObjectStorageService(settings)
+    assert storage.get_presigned_get_url("a/b.svs").startswith("http://localhost:9090/")
+    assert storage.get_presigned_part_urls("a/b.svs", "upload-1", [1])[1].startswith("http://localhost:9090/")
+
+
+def test_without_a_public_endpoint_presigned_urls_use_the_bucket_endpoint(settings: Settings) -> None:
+    settings.BUCKET_ENDPOINT = "https://s3.eu-north-1.amazonaws.com"
+    assert ObjectStorageService(settings).get_presigned_get_url("a/b.svs").startswith(
+        "https://s3.eu-north-1.amazonaws.com/"
+    )

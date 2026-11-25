@@ -1,25 +1,91 @@
-# Every service loads its config from .env.local via env_file (not ${VAR} interpolation), so
-# `docker compose up` needs no --env-file flag and cannot silently see blank credentials.
-# Nothing stateful runs here: the database is RDS and slides live in S3 (see infra/). Containers
-# reach RDS through the SSM tunnel on the host (localhost:15432 there), hence the POSTGRES_SERVER
-# override; extra_hosts makes host.docker.internal resolve on Linux too, as it does on Docker Desktop.
+# Local development only: database, object storage and broker all run here, so nothing touches the cloud. Production
+# runs docker-compose.prod.yml against RDS, S3 and SQS instead.
+#
+# Every service loads .env.local via env_file (copy it from .env.example; it works as is). Its addresses are the ones
+# seen from the host, for running the API outside Docker; `x-in-docker` swaps them for the service names here.
+# Ports are published on BIND_ADDRESS (default 127.0.0.1). On Linux without Docker Desktop set it to the docker0
+# address (usually 172.17.0.1) so the ml-worker stack can reach Redis and S3Mock through host.docker.internal.
+x-in-docker: &in-docker
+  POSTGRES_SERVER: postgres
+  POSTGRES_PORT: 5432
+  BUCKET_ENDPOINT: http://s3:9090
+  # Presigned URLs are opened by the browser, which reaches S3Mock on the host.
+  BUCKET_PUBLIC_ENDPOINT: http://localhost:9090
+  CELERY_BROKER_URL: redis://redis:6379/0
+  SLIDE_CACHE_DIR: /var/lib/wsi-cache
+
+x-backend: &backend
+  build: .
+  env_file: .env.local
+  environment: *in-docker
+
 services:
+  postgres:
+    image: postgres:17-alpine
+    # Reads POSTGRES_USER, POSTGRES_PASSWORD and POSTGRES_DB, the same values the API connects with.
+    env_file: .env.local
+    ports:
+      # Not 5432, which a native PostgreSQL often holds.
+      - "${BIND_ADDRESS:-127.0.0.1}:5434:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\"" ]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # S3 emulator with the same presigned multipart support the upload flow relies on. Any credentials work.
+  s3:
+    image: adobe/s3mock:5.2.3
+    environment:
+      COM_ADOBE_TESTING_S3MOCK_STORE_INITIAL_BUCKETS: wsi-slides
+      COM_ADOBE_TESTING_S3MOCK_STORE_RETAIN_FILES_ON_EXIT: "true"
+      COM_ADOBE_TESTING_S3MOCK_STORE_ROOT: /s3mockroot
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:9090:9090"
+    volumes:
+      - s3_data:/s3mockroot
+
+  # The broker shared with the ml-worker stack.
+  redis:
+    image: redis:7.4-alpine
+    command: [ "redis-server", "--appendonly", "yes" ]
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  migrate:
+    <<: *backend
+    command: [ "alembic", "upgrade", "head" ]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # Creates the ADMIN_USERNAME account on a fresh database; does nothing once it exists.
+  create-admin:
+    <<: *backend
+    command: [ "python", "-m", "scripts.create_admin" ]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
   api:
-    build: .
-    # --reload is what the source bind mount below is for; the image's own copy is used by the migrate service.
+    <<: *backend
+    # --reload is what the source bind mount below is for.
     command: [ "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--no-access-log", "--reload" ]
     ports:
-      - "8000:8000"
+      - "${BIND_ADDRESS:-127.0.0.1}:8000:8000"
     volumes:
       - .:/app
       # Kept outside the /app bind mount so cached slides never land in the repository.
       - slide_cache:/var/lib/wsi-cache
-    env_file: .env.local
-    environment:
-      SLIDE_CACHE_DIR: /var/lib/wsi-cache
-      POSTGRES_SERVER: host.docker.internal
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     healthcheck:
       test: [ "CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')" ]
       interval: 30s
@@ -27,33 +93,28 @@ services:
       retries: 5
       start_period: 10s
     depends_on:
-      migrate:
+      create-admin:
         condition: service_completed_successfully
+      s3:
+        condition: service_started
+      redis:
+        condition: service_healthy
 
-  # Saves the results of the ml-worker stack. Only with `--profile segmentation`: without that stack there is nothing
-  # for it to do. It keeps retrying the broker by itself, so the two stacks can start in any order.
+  # Saves the results of the ml-worker stack. Only with `--profile segmentation` (and SEGMENTATION_ENABLED=true):
+  # without a worker there is nothing for it to do.
   segmentation-consumer:
-    build: .
+    <<: *backend
     profiles: [ "segmentation" ]
     command: [ "celery", "-A", "app.segmentation_consumer", "worker", "-Q", "segmentation-results", "--pool=solo", "--concurrency=1", "--without-gossip", "--without-mingle", "--without-heartbeat", "--loglevel=INFO" ]
-    env_file: .env.local
-    environment:
-      POSTGRES_SERVER: host.docker.internal
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     restart: on-failure
     depends_on:
       migrate:
         condition: service_completed_successfully
-
-  migrate:
-    build: .
-    command: [ "alembic", "upgrade", "head" ]
-    env_file: .env.local
-    environment:
-      POSTGRES_SERVER: host.docker.internal
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+      redis:
+        condition: service_healthy
 
 volumes:
+  postgres_data:
+  s3_data:
+  redis_data:
   slide_cache:

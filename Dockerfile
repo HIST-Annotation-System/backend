@@ -9,7 +9,8 @@ ENV PATH="/opt/venv/bin:$PATH"
 
 COPY pyproject.toml uv.lock ./
 
-RUN uv sync --frozen
+# --no-dev: type checkers and stubs stay out of the image.
+RUN uv sync --frozen --no-dev
 
 COPY . .
 
