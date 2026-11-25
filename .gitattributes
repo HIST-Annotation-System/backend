@@ -1,0 +1,3 @@
+*.svs filter=lfs diff=lfs merge=lfs -text
+# Run on Linux hosts, whatever the checkout platform.
+*.sh text eol=lf

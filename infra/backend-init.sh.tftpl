@@ -1,0 +1,37 @@
+#!/bin/bash
+# First boot of the backend host (Amazon Linux 2023, arm64): Docker with the compose plugin, swap, and the slide
+# cache volume. Everything else arrives with each deploy (deploy/deploy.sh in the backend repository).
+set -euxo pipefail
+
+COMPOSE_VERSION=v2.35.1
+
+dnf install -y docker
+mkdir -p /usr/local/lib/docker/cli-plugins
+curl -fsSL "https://github.com/docker/compose/releases/download/$COMPOSE_VERSION/docker-compose-linux-aarch64" \
+  -o /usr/local/lib/docker/cli-plugins/docker-compose
+chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+systemctl enable --now docker
+
+# 2 GB of RAM: swap absorbs peaks (several large slides open at once) instead of the kernel killing the API.
+if [ ! -f /swapfile ]; then
+  dd if=/dev/zero of=/swapfile bs=1M count=2048
+  chmod 600 /swapfile
+  mkswap /swapfile
+  echo "/swapfile none swap sw 0 0" >>/etc/fstab
+fi
+swapon -a
+
+# The cache volume is attached after the instance starts, so wait for it. It is formatted only when blank: a volume
+# re-attached to a new host keeps its slides.
+for _ in $(seq 60); do
+  [ -e "${cache_device}" ] && break
+  sleep 5
+done
+if ! blkid "${cache_device}"; then
+  mkfs.xfs "${cache_device}"
+fi
+mkdir -p "${cache_dir}"
+echo "UUID=$(blkid -s UUID -o value "${cache_device}") ${cache_dir} xfs defaults,nofail 0 2" >>/etc/fstab
+mount -a
+
+mkdir -p /opt/wsi
