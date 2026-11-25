@@ -34,7 +34,7 @@ def _slide_files(resources: AppResources) -> SlideFileService:
         resources.storage,
         resources.settings.SLIDE_CACHE_DIR,
         resources.slide_download_locks,
-        resources.slide_handles.ids,
+        resources.slide_handles.evict,
     )
 
 

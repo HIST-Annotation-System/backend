@@ -68,10 +68,6 @@ class SlideHandleCache:
     def __len__(self) -> int:
         return len(self._entries)
 
-    def ids(self) -> list[uuid.UUID]:
-        with self._lock:
-            return list(self._entries)
-
     def get(self, slide_id: uuid.UUID) -> OpenedSlide | None:
         with self._lock:
             entry = self._entries.get(slide_id)
@@ -218,4 +214,7 @@ class SlideService:
             deepzoom = DeepZoomGenerator(handle, tile_size=DZI_TILE_SIZE, overlap=DZI_OVERLAP, limit_bounds=True)
             opened = OpenedSlide(slide=handle, deepzoom=deepzoom)
             self._handles.put(slide_id, opened)
+        else:
+            # Keeps a slide that is being viewed from being deleted to make room for another.
+            self._files.touch(slide_id)
         return opened

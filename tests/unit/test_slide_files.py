@@ -1,4 +1,5 @@
 import os
+import time
 import uuid
 import zipfile
 from collections.abc import Callable, Iterator
@@ -155,24 +156,30 @@ class Cache:
         self.root = root
         self.storage = FileStorage()
         self.locks = SlideDownloadLocks()
-        self.open: set[uuid.UUID] = set()
-        self.files = SlideFileService(self.storage, root, self.locks, lambda: self.open)  # type: ignore[arg-type]
+        self.forgotten: list[uuid.UUID] = []
+        self.files = SlideFileService(self.storage, root, self.locks, self.forgotten.append)  # type: ignore[arg-type]
         self.files._free_bytes = self.free  # type: ignore[method-assign]
 
     def free(self) -> int:
         return DISK_BYTES - sum(path.stat().st_size for path in self.root.rglob("*") if path.is_file())
 
-    def cached(self, age: int) -> uuid.UUID:
-        """A cached slide last opened `age` seconds ago."""
+    def cached(self, minutes_ago: int) -> uuid.UUID:
+        """A cached slide last used `minutes_ago` minutes ago."""
         slide_id = uuid.uuid4()
         slide_dir = self.root / str(slide_id)
         slide_dir.mkdir()
         (slide_dir / "s.svs").write_bytes(b"x" * SLIDE_BYTES)
-        os.utime(slide_dir, (0, 1_000_000 - age))
+        used = time.time() - minutes_ago * 60
+        os.utime(slide_dir, (used, used))
         return slide_id
 
     def has(self, slide_id: uuid.UUID) -> bool:
         return self.files.is_cached(slide_id)
+
+    def download(self) -> uuid.UUID:
+        slide = new_slide()
+        self.files.materialize(slide.id, slide.storage_key)
+        return slide.id
 
 
 @pytest.fixture
@@ -186,44 +193,60 @@ def new_slide() -> Slide:
 
 
 class TestEviction:
-    def test_least_recently_opened_slide_makes_room(self, cache: Cache) -> None:
-        oldest, middle, newest = cache.cached(age=30), cache.cached(age=20), cache.cached(age=10)
-        slide = new_slide()
-        cache.files.materialize(slide.id, slide.storage_key)
-        assert cache.has(slide.id)
+    def test_the_least_recently_used_slide_makes_room_and_its_handle_is_dropped(self, cache: Cache) -> None:
+        oldest, middle, newest = cache.cached(60), cache.cached(50), cache.cached(40)
+        assert cache.has(cache.download())
         assert not cache.has(oldest) and cache.has(middle) and cache.has(newest)
+        assert cache.forgotten == [oldest]
 
-    def test_open_slides_and_slides_in_use_stay(self, cache: Cache) -> None:
-        opened, busy, idle = cache.cached(age=30), cache.cached(age=20), cache.cached(age=10)
-        cache.open.add(opened)
+    def test_recently_used_and_busy_slides_stay(self, cache: Cache) -> None:
+        recent, busy, idle = cache.cached(5), cache.cached(60), cache.cached(40)
         with cache.locks.get(busy):
-            slide = new_slide()
-            cache.files.materialize(slide.id, slide.storage_key)
-        assert cache.has(opened) and cache.has(busy) and not cache.has(idle)
+            cache.download()
+        assert cache.has(recent) and cache.has(busy) and not cache.has(idle)
 
     def test_downloads_in_progress_are_not_touched(self, cache: Cache) -> None:
         partial = cache.root / f"{uuid.uuid4()}.tmp-abc"
         partial.mkdir()
         (partial / "s.svs").write_bytes(b"x" * SLIDE_BYTES)
-        cache.cached(age=10)
-        slide = new_slide()
-        cache.files.materialize(slide.id, slide.storage_key)
+        cache.cached(60)
+        cache.download()
         assert partial.is_dir()
 
-    def test_a_full_cache_of_open_slides_refuses_the_download(self, cache: Cache) -> None:
-        cache.open.update({cache.cached(age=30), cache.cached(age=20), cache.cached(age=10)})
-        slide = new_slide()
+    def test_a_cache_full_of_recently_used_slides_refuses_the_download(self, cache: Cache) -> None:
+        cache.cached(1), cache.cached(5), cache.cached(10)
         with pytest.raises(InsufficientStorageError):
-            cache.files.materialize(slide.id, slide.storage_key)
-        assert not cache.has(slide.id) and cache.storage.downloads == 0
+            cache.download()
+        assert cache.storage.downloads == 0 and cache.forgotten == []
 
-    def test_opening_a_slide_marks_it_recently_used(self, cache: Cache) -> None:
-        reopened, other = cache.cached(age=30), cache.cached(age=20)
-        cache.cached(age=10)
-        cache.files.entry_path(Slide(id=reopened, storage_key="unused"))
-        slide = new_slide()
-        cache.files.materialize(slide.id, slide.storage_key)
-        assert cache.has(reopened) and not cache.has(other)
+    def test_using_a_slide_protects_it(self, cache: Cache) -> None:
+        used, other = cache.cached(60), cache.cached(50)
+        cache.cached(40)
+        cache.files.entry_path(Slide(id=used, storage_key="unused"))
+        cache.download()
+        assert cache.has(used) and not cache.has(other)
+
+
+class TestReservations:
+    def test_space_claimed_by_a_running_download_counts_as_taken(self, cache: Cache) -> None:
+        idle = cache.cached(60)
+        # 70 bytes free would fit 30 more, but a running download has claimed 40 of them.
+        cache.locks.reserve(uuid.uuid4(), 40)
+        cache.download()
+        assert not cache.has(idle)
+
+    def test_no_room_beside_a_running_download(self, cache: Cache) -> None:
+        cache.locks.reserve(uuid.uuid4(), 70)
+        with pytest.raises(InsufficientStorageError):
+            cache.download()
+
+    def test_a_download_releases_its_claim_whether_it_succeeds_or_fails(self, cache: Cache) -> None:
+        cache.download()
+        assert cache.locks.reserved() == 0
+        cache.storage.error = RuntimeError("connection reset")
+        with pytest.raises(RuntimeError):
+            cache.download()
+        assert cache.locks.reserved() == 0
 
 
 class QueueingExecutor:

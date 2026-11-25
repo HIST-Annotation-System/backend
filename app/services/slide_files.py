@@ -4,9 +4,10 @@ import logging
 import os
 import shutil
 import threading
+import time
 import uuid
 import zipfile
-from collections.abc import Callable, Collection
+from collections.abc import Callable
 from concurrent.futures import Executor
 from pathlib import Path, PurePosixPath
 
@@ -26,6 +27,8 @@ logger = logging.getLogger(__name__)
 
 # Left free on the cache disk after every download, for logs, temporary files and the system itself.
 CACHE_MIN_FREE_BYTES = 2 * 1024**3
+# A slide used this recently is never deleted to make room: someone is probably still looking at it.
+CACHE_KEEP_RECENT_SECONDS = 15 * 60
 CACHE_FULL = "Not enough disk space on the server for this slide ({needed:.1f} GB); the other cached slides are in use."
 DOWNLOAD_FAILED = "The slide could not be copied to the server."
 INVALID_ARCHIVE = "The uploaded file is not a valid ZIP archive."
@@ -35,7 +38,8 @@ UNSAFE_ARCHIVE_ENTRY = "Archive entry '{name}' has an unsafe path."
 
 class SlideDownloadLocks:
     """One lock per slide, so concurrent requests for a slide not cached yet download it only once; plus which
-    background downloads are under way, and why the last one of each slide failed.
+    background downloads are under way, why the last one of each slide failed, and the disk space each running
+    download has claimed.
 
     Process-wide (built in the lifespan); locks are tiny and slides few, so they are never dropped.
     """
@@ -44,11 +48,27 @@ class SlideDownloadLocks:
         self._locks: dict[uuid.UUID, threading.Lock] = {}
         self._background: set[uuid.UUID] = set()
         self._failures: dict[uuid.UUID, AppError] = {}
+        self._reserved: dict[uuid.UUID, int] = {}
         self._guard = threading.Lock()
+        # Held while a download decides whether it fits, so two downloads never count the same free space.
+        self.room = threading.Lock()
 
     def get(self, slide_id: uuid.UUID) -> threading.Lock:
         with self._guard:
             return self._locks.setdefault(slide_id, threading.Lock())
+
+    def reserve(self, slide_id: uuid.UUID, size: int) -> None:
+        with self._guard:
+            self._reserved[slide_id] = size
+
+    def release(self, slide_id: uuid.UUID) -> None:
+        with self._guard:
+            self._reserved.pop(slide_id, None)
+
+    def reserved(self) -> int:
+        """Bytes claimed by running downloads. Counts what they already wrote once more, so the disk can't overfill."""
+        with self._guard:
+            return sum(self._reserved.values())
 
     def start_background(self, slide_id: uuid.UUID) -> bool:
         """False when a background download of the slide is already queued or running."""
@@ -70,27 +90,33 @@ class SlideDownloadLocks:
 
 
 class SlideFileService:
-    """The slide cache. Its disk is bounded, so the least recently opened slides are deleted to make room."""
+    """The slide cache. Its disk is bounded, so the least recently used slides are deleted to make room."""
 
     def __init__(
         self,
         storage: ObjectStorage,
         cache_dir: Path,
         locks: SlideDownloadLocks,
-        open_slides: Callable[[], Collection[uuid.UUID]] = tuple,
+        forget: Callable[[uuid.UUID], None] = lambda slide_id: None,
     ) -> None:
         self._storage = storage
         self._cache_dir = cache_dir
         self._locks = locks
-        # Slides with an open OpenSlide handle: never deleted from under it.
-        self._open_slides = open_slides
+        # Drops the slide's open handle once its files are deleted (`SlideHandleCache.evict`).
+        self._forget = forget
 
     def entry_path(self, slide: Slide) -> Path:
         """The file OpenSlide should open for `slide`, downloading the slide first if needed."""
         slide_dir = self.materialize(slide.id, slide.storage_key)
-        # The directory's mtime is the slide's last use: eviction deletes the least recently opened slides first.
-        os.utime(slide_dir)
+        self.touch(slide.id)
         return find_slide_entry(slide_dir)
+
+    def touch(self, slide_id: uuid.UUID) -> None:
+        """Marks the slide as just used: the directory's mtime is what eviction orders by and protects."""
+        try:
+            os.utime(self._cache_dir / str(slide_id))
+        except OSError:  # deleted meanwhile
+            pass
 
     def is_cached(self, slide_id: uuid.UUID) -> bool:
         return (self._cache_dir / str(slide_id)).is_dir()
@@ -143,15 +169,15 @@ class SlideFileService:
             filename = PurePosixPath(storage_key).name
             if storage_key.endswith("/"):
                 members = list_folder_members(self._storage, storage_key)
-                self._make_room(sum(member.size for member in members.values()))
+                self._make_room(slide_id, sum(member.size for member in members.values()))
                 self._download_folder(members, temp_dir, on_progress)
             elif filename.lower().endswith(ARCHIVE_SUFFIX):
                 # The archive and its extracted copy are both on disk until the archive is deleted.
-                self._make_room(2 * self._storage.head_size(storage_key))
+                self._make_room(slide_id, 2 * self._storage.head_size(storage_key))
                 self._storage.download_file(storage_key, archive, on_progress)
                 extract_zip_safely(archive, temp_dir)
             else:
-                self._make_room(self._storage.head_size(storage_key))
+                self._make_room(slide_id, self._storage.head_size(storage_key))
                 self._storage.download_file(storage_key, temp_dir / filename, on_progress)
             try:
                 os.replace(temp_dir, slide_dir)
@@ -159,30 +185,40 @@ class SlideFileService:
                 if not slide_dir.is_dir():
                     raise
         finally:
+            self._locks.release(slide_id)
             shutil.rmtree(temp_dir, ignore_errors=True)
             archive.unlink(missing_ok=True)
         return slide_dir
 
-    def _make_room(self, needed: int) -> None:
-        """Deletes the least recently opened slides until `needed` more bytes fit with CACHE_MIN_FREE_BYTES to spare.
+    def _make_room(self, slide_id: uuid.UUID, needed: int) -> None:
+        """Deletes the least recently used slides until `needed` more bytes fit with CACHE_MIN_FREE_BYTES to spare,
+        and claims them for `slide_id`'s download (released by `_download`).
 
-        Open slides stay, and so do slides another thread is downloading or deleting (their lock is held).
+        Space other downloads have claimed counts as taken. Slides used in the last CACHE_KEEP_RECENT_SECONDS stay,
+        and so do slides another thread is downloading or deleting (their lock is held).
         """
-        open_slides = set(self._open_slides())
-        for slide_dir in sorted(self._cached_slide_dirs(), key=_modified_at):
-            if self._free_bytes() - needed >= CACHE_MIN_FREE_BYTES:
-                return
-            slide_id = uuid.UUID(slide_dir.name)
-            lock = self._locks.get(slide_id)
-            if slide_id in open_slides or not lock.acquire(blocking=False):
-                continue
-            try:
-                logger.info("Removing slide %s from the cache to make room", slide_id)
-                shutil.rmtree(slide_dir, ignore_errors=True)
-            finally:
-                lock.release()
-        if self._free_bytes() - needed < CACHE_MIN_FREE_BYTES:
-            raise InsufficientStorageError(CACHE_FULL.format(needed=needed / 1024**3))
+        with self._locks.room:
+
+            def fits() -> bool:
+                return self._free_bytes() - self._locks.reserved() - needed >= CACHE_MIN_FREE_BYTES
+
+            recent = time.time() - CACHE_KEEP_RECENT_SECONDS
+            for slide_dir in sorted(self._cached_slide_dirs(), key=_modified_at):
+                if fits():
+                    break
+                cached_id = uuid.UUID(slide_dir.name)
+                lock = self._locks.get(cached_id)
+                if _modified_at(slide_dir) > recent or not lock.acquire(blocking=False):
+                    continue
+                try:
+                    logger.info("Removing slide %s from the cache to make room", cached_id)
+                    shutil.rmtree(slide_dir, ignore_errors=True)
+                    self._forget(cached_id)
+                finally:
+                    lock.release()
+            if not fits():
+                raise InsufficientStorageError(CACHE_FULL.format(needed=needed / 1024**3))
+            self._locks.reserve(slide_id, needed)
 
     def _cached_slide_dirs(self) -> list[Path]:
         """Complete slide copies (downloads in progress are named `<id>.tmp-...`)."""

@@ -61,6 +61,7 @@ class FakeFiles:
     def __init__(self) -> None:
         self.purged: list[uuid.UUID] = []
         self.background: list[uuid.UUID] = []
+        self.touched: list[uuid.UUID] = []
 
     def purge(self, slide_id: uuid.UUID) -> None:
         self.purged.append(slide_id)
@@ -70,6 +71,9 @@ class FakeFiles:
 
     def download_in_background(self, slide: Slide, pool: Any) -> None:
         self.background.append(slide.id)
+
+    def touch(self, slide_id: uuid.UUID) -> None:
+        self.touched.append(slide_id)
 
 
 class DeletingStorage(MemoryStorage):
@@ -184,11 +188,12 @@ class TestUncachedSlide:
         assert error.value.status_code == 503 and error.value.code == "slide_preparing"
         assert sw.files.background == [slide.id]
 
-    def test_an_open_slide_needs_no_download(self, sw: SlideWorld) -> None:
+    def test_an_open_slide_needs_no_download_and_counts_as_used(self, sw: SlideWorld) -> None:
         slide = sw.slide()
         sw.handles.put(slide.id, opened())
         assert self.service(sw)._open(slide.id) is sw.handles.get(slide.id)
         assert sw.files.background == []
+        assert sw.files.touched == [slide.id]
 
     def test_a_slide_that_is_not_ready_is_still_a_conflict(self, sw: SlideWorld) -> None:
         slide = sw.slide(status=SlideStatus.PROCESSING)
