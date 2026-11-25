@@ -6,6 +6,10 @@ terraform {
       source  = "hashicorp/aws"
       version = "~> 5.0"
     }
+    random = {
+      source  = "hashicorp/random"
+      version = "~> 3.6"
+    }
   }
 }
 
@@ -35,7 +39,7 @@ resource "aws_security_group" "rds" {
   # name_prefix + create_before_destroy: a ForceNew edit (e.g. the description) would otherwise try to
   # delete a group the DB still references, and deadlock the apply.
   name_prefix = "wsi-rds-sg-"
-  description = "Allow PostgreSQL inbound from the SSM tunnel host"
+  description = "Allow PostgreSQL inbound from the backend host"
   vpc_id      = data.aws_vpc.default.id
 
   ingress {
@@ -43,7 +47,7 @@ resource "aws_security_group" "rds" {
     from_port       = 5432
     to_port         = 5432
     protocol        = "tcp"
-    security_groups = [aws_security_group.tunnel.id]
+    security_groups = [aws_security_group.backend.id]
   }
 
   egress {
@@ -55,78 +59,6 @@ resource "aws_security_group" "rds" {
 
   lifecycle {
     create_before_destroy = true
-  }
-}
-
-# The tunnel host devs port-forward through with SSM Session Manager. It accepts no inbound traffic at all:
-# the SSM agent dials out to AWS, and AWS relays each session after checking the dev's IAM user.
-resource "aws_security_group" "tunnel" {
-  name_prefix = "wsi-tunnel-sg-"
-  description = "SSM tunnel host: no inbound"
-  vpc_id      = data.aws_vpc.default.id
-
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  lifecycle {
-    create_before_destroy = true
-  }
-}
-
-resource "aws_iam_role" "tunnel" {
-  name = "wsi-tunnel"
-
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect    = "Allow"
-      Action    = "sts:AssumeRole"
-      Principal = { Service = "ec2.amazonaws.com" }
-    }]
-  })
-}
-
-resource "aws_iam_role_policy_attachment" "tunnel_ssm" {
-  role       = aws_iam_role.tunnel.name
-  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
-}
-
-resource "aws_iam_instance_profile" "tunnel" {
-  name = "wsi-tunnel"
-  role = aws_iam_role.tunnel.name
-}
-
-# Amazon Linux ships with the SSM agent, so the instance needs no user data.
-data "aws_ssm_parameter" "al2023_arm64" {
-  name = "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64"
-}
-
-resource "aws_instance" "tunnel" {
-  # The account is on the AWS Free plan, which only launches free-tier-eligible types (t4g.nano is not).
-  ami                  = data.aws_ssm_parameter.al2023_arm64.value
-  instance_type        = "t4g.micro"
-  subnet_id            = data.aws_subnets.default.ids[0]
-  iam_instance_profile = aws_iam_instance_profile.tunnel.name
-
-  vpc_security_group_ids = [aws_security_group.tunnel.id]
-  # Only so the agent can reach the SSM endpoints; VPC endpoints would avoid it but cost more.
-  associate_public_ip_address = true
-
-  metadata_options {
-    http_tokens = "required"
-  }
-
-  # A newer AMI must not replace the instance (and change its id in everyone's tunnel command).
-  lifecycle {
-    ignore_changes = [ami]
-  }
-
-  tags = {
-    Name = "wsi-tunnel"
   }
 }
 
@@ -156,7 +88,7 @@ resource "aws_db_instance" "postgres" {
   db_subnet_group_name   = aws_db_subnet_group.default.name
   vpc_security_group_ids = [aws_security_group.rds.id]
 
-  # Reachable only from inside the VPC, i.e. through the tunnel host.
+  # Reachable only from inside the VPC, i.e. from the backend host.
   publicly_accessible = false
   # Otherwise modifications like the one above wait for the weekly maintenance window.
   apply_immediately = true
@@ -193,7 +125,8 @@ resource "aws_s3_bucket_cors_configuration" "slides" {
   cors_rule {
     allowed_headers = ["*"]
     allowed_methods = ["PUT"]
-    allowed_origins = ["*"] # Tighten to your frontend domain in production.
+    # Only the deployed site uploads here; local development uses its own S3 emulator.
+    allowed_origins = ["https://${aws_cloudfront_distribution.app.domain_name}"]
     expose_headers  = ["ETag"]
     max_age_seconds = 3600
   }
@@ -256,7 +189,7 @@ resource "aws_iam_user_policy" "app_s3" {
 }
 
 # The segmentation worker runs outside AWS, on a machine with a GPU, so it gets the least it can work with: it reads
-# hotspot images and writes its results, and has no access to the database.
+# hotspot images, writes its results and uses the two segmentation queues (segmentation.tf), with no database access.
 resource "aws_iam_user" "ml_worker" {
   name = "wsi-ml-worker"
 }
@@ -295,38 +228,3 @@ resource "aws_iam_user_policy" "ml_worker_s3" {
   })
 }
 
-# One IAM user per developer, allowed nothing but a port-forward session through the tunnel host.
-resource "aws_iam_user" "dev" {
-  for_each = toset(var.developers)
-  name     = "wsi-dev-${each.key}"
-}
-
-resource "aws_iam_access_key" "dev" {
-  for_each = aws_iam_user.dev
-  user     = each.value.name
-}
-
-resource "aws_iam_user_policy" "dev_tunnel" {
-  for_each = aws_iam_user.dev
-  name     = "wsi-db-tunnel"
-  user     = each.value.name
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect = "Allow"
-        Action = "ssm:StartSession"
-        Resource = [
-          aws_instance.tunnel.arn,
-          "arn:aws:ssm:${var.aws_region}::document/AWS-StartPortForwardingSessionToRemoteHost",
-        ]
-      },
-      {
-        Effect   = "Allow"
-        Action   = ["ssm:TerminateSession", "ssm:ResumeSession"]
-        Resource = "arn:aws:ssm:${var.aws_region}:*:session/$${aws:username}-*"
-      },
-    ]
-  })
-}

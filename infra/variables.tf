@@ -36,7 +36,20 @@ variable "bucket_name" {
   type        = string
 }
 
-variable "developers" {
-  description = "One name per developer; each gets an IAM user that can only open the DB tunnel."
-  type        = list(string)
+variable "admin_username" {
+  description = "The application's administrator account, created on a fresh database by the first deploy."
+  type        = string
+  default     = "admin"
+}
+
+variable "admin_password" {
+  description = "Its password. Only used when the account does not exist yet; change it in the app afterwards."
+  type        = string
+  sensitive   = true
+}
+
+variable "github_organization" {
+  description = "GitHub organization holding the backend and frontend repositories whose main branch deploys."
+  type        = string
+  default     = "HIST-Annotation-System"
 }

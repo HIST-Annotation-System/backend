@@ -1,49 +1,45 @@
-# The infra-derived half of backend/.env.local, ready to paste (the auth/admin settings are not
-# provisioned here). Sensitive as a whole, so read it with: terraform output -raw env_local
-output "env_local" {
-  description = "The BUCKET_*/POSTGRES_* block for backend/.env.local."
-  sensitive   = true
-  value       = <<-EOT
-    BUCKET_ENDPOINT=https://s3.${var.aws_region}.amazonaws.com
-    BUCKET_ACCESS_KEY=${aws_iam_access_key.app.id}
-    BUCKET_SECRET_KEY=${aws_iam_access_key.app.secret}
-    BUCKET_NAME=${aws_s3_bucket.slides.id}
-    BUCKET_REGION=${var.aws_region}
-    POSTGRES_SERVER=localhost
-    POSTGRES_PORT=15432
-    POSTGRES_USER=${var.db_username}
-    POSTGRES_PASSWORD=${var.db_password}
-    POSTGRES_DB=${var.db_name}
-  EOT
+output "app_url" {
+  description = "The deployed app (frontend and /api/v1)."
+  value       = "https://${aws_cloudfront_distribution.app.domain_name}"
 }
 
-# The BUCKET_* block for ml-worker/.env. Read with: terraform output -raw ml_worker_env
+# Repository variables (Settings > Secrets and variables > Actions > Variables) for the two deploy workflows.
+# Not secret: they only name resources, which only the OIDC roles may use.
+output "github_variables" {
+  description = "Variables to set in the backend and frontend repositories."
+  value = {
+    backend = {
+      AWS_ROLE_ARN   = aws_iam_role.github_deploy["backend"].arn
+      ECR_REPOSITORY = aws_ecr_repository.backend.name
+      INSTANCE_ID    = aws_instance.backend.id
+    }
+    frontend = {
+      AWS_ROLE_ARN    = aws_iam_role.github_deploy["frontend"].arn
+      FRONTEND_BUCKET = aws_s3_bucket.frontend.id
+      DISTRIBUTION_ID = aws_cloudfront_distribution.app.id
+    }
+  }
+}
+
+# A root shell on the backend host, e.g. for `docker compose -f docker-compose.prod.yml -p wsi logs` in /opt/wsi.
+output "shell_command" {
+  description = "Opens a shell on the backend host through SSM (needs the Session Manager plugin)."
+  value       = "aws ssm start-session --region ${var.aws_region} --target ${aws_instance.backend.id}"
+}
+
+# The .env of the GPU PC that serves the deployed app. Read with: terraform output -raw ml_worker_env
 output "ml_worker_env" {
-  description = "The BUCKET_* block for ml-worker/.env."
+  description = "The broker and bucket block for ml-worker/.env."
   sensitive   = true
   value       = <<-EOT
+    CELERY_BROKER_URL=sqs://
+    CELERY_BROKER_TRANSPORT_OPTIONS=${local.sqs_transport_options}
+    AWS_ACCESS_KEY_ID=${aws_iam_access_key.ml_worker.id}
+    AWS_SECRET_ACCESS_KEY=${aws_iam_access_key.ml_worker.secret}
     BUCKET_ENDPOINT=https://s3.${var.aws_region}.amazonaws.com
     BUCKET_ACCESS_KEY=${aws_iam_access_key.ml_worker.id}
     BUCKET_SECRET_KEY=${aws_iam_access_key.ml_worker.secret}
     BUCKET_NAME=${aws_s3_bucket.slides.id}
     BUCKET_REGION=${var.aws_region}
   EOT
-}
-
-# Hand each developer their own pair, out of band. Read with: terraform output -json dev_credentials
-output "dev_credentials" {
-  description = "AWS access key per developer, for `aws configure`."
-  sensitive   = true
-  value = {
-    for name, key in aws_iam_access_key.dev : name => {
-      access_key_id     = key.id
-      secret_access_key = key.secret
-    }
-  }
-}
-
-# Keep it running in a spare terminal while the backend runs: it forwards localhost:15432 to RDS.
-output "tunnel_command" {
-  description = "Opens the DB tunnel on localhost:15432."
-  value       = "aws ssm start-session --region ${var.aws_region} --target ${aws_instance.tunnel.id} --document-name AWS-StartPortForwardingSessionToRemoteHost --parameters host=${aws_db_instance.postgres.address},portNumber=${aws_db_instance.postgres.port},localPortNumber=15432"
 }
