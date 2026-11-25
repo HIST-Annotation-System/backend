@@ -80,8 +80,8 @@ The app is at `terraform output -raw app_url`.
 On the PC with the GPU, in its `ml-worker` checkout:
 
 ```bash
-terraform output -raw ml_worker_env   # here; paste into ml-worker/.env on the PC (keep LOG_LEVEL etc.)
-docker compose up -d --build          # there
+terraform output -raw ml_worker_env > ../../ml-worker/.env.aws   # Git Bash (PowerShell > writes UTF-16); or paste it on the PC
+docker compose --profile aws up -d --build                       # in ml-worker, on the PC
 ```
 
 The worker only dials out (SQS and S3), so the PC needs no open port. Its key can read hotspot images, write

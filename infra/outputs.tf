@@ -27,9 +27,9 @@ output "shell_command" {
   value       = "aws ssm start-session --region ${var.aws_region} --target ${aws_instance.backend.id}"
 }
 
-# The .env of the GPU PC that serves the deployed app. Read with: terraform output -raw ml_worker_env
+# ml-worker/.env.aws: the settings of the worker that serves the deployed app. Read with: terraform output -raw ml_worker_env
 output "ml_worker_env" {
-  description = "The broker and bucket block for ml-worker/.env."
+  description = "The broker and bucket settings for ml-worker/.env.aws."
   sensitive   = true
   value       = <<-EOT
     CELERY_BROKER_URL=sqs://
