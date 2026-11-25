@@ -245,5 +245,11 @@ resource "aws_ssm_parameter" "backend_env" {
     CELERY_BROKER_URL=sqs://
     CELERY_BROKER_TRANSPORT_OPTIONS=${local.sqs_transport_options}
     SLIDE_CACHE_DIR=${local.slide_cache_dir}
+    # Read by the alloy service only (monitoring, see perf/README.md).
+    GRAFANA_CLOUD_PROMETHEUS_URL=${var.grafana_cloud.prometheus_url}
+    GRAFANA_CLOUD_PROMETHEUS_USER=${var.grafana_cloud.prometheus_user}
+    GRAFANA_CLOUD_LOKI_URL=${var.grafana_cloud.loki_url}
+    GRAFANA_CLOUD_LOKI_USER=${var.grafana_cloud.loki_user}
+    GRAFANA_CLOUD_TOKEN=${var.grafana_cloud.token}
   EOT
 }

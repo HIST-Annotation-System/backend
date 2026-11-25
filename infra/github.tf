@@ -9,9 +9,13 @@ resource "aws_iam_openid_connect_provider" "github" {
 }
 
 locals {
+  # GitHub's numeric ids (https://api.github.com/repos/<organization>/<repository>, field `id`). This organization's
+  # tokens name each run's repository as `<organization>@<id>/<repository>@<id>`, which a deleted and re-created
+  # namesake cannot match.
+  github_organization_id = 323730843
   github_repositories = {
-    backend  = "${var.github_organization}/backend"
-    frontend = "${var.github_organization}/frontend"
+    backend  = { name = "backend", id = 1353986392 }
+    frontend = { name = "frontend", id = 1353987027 }
   }
 }
 
@@ -32,10 +36,15 @@ data "aws_iam_policy_document" "github_deploy_trust" {
       values   = ["sts.amazonaws.com"]
     }
 
+    # Exact matches only (no wildcards): a pattern would also admit look-alike organizations and repositories.
+    # The plain `owner/repository` form too, in case the organization switches back to GitHub's default claim.
     condition {
       test     = "StringEquals"
       variable = "token.actions.githubusercontent.com:sub"
-      values   = ["repo:${each.value}:ref:refs/heads/main"]
+      values = [
+        "repo:${var.github_organization}@${local.github_organization_id}/${each.value.name}@${each.value.id}:ref:refs/heads/main",
+        "repo:${var.github_organization}/${each.value.name}:ref:refs/heads/main",
+      ]
     }
   }
 }
