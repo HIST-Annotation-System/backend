@@ -53,3 +53,19 @@ variable "github_organization" {
   type        = string
   default     = "HIST-Annotation-System"
 }
+
+variable "grafana_cloud" {
+  description = <<-EOT
+    Where the host's alloy service pushes metrics and logs: the Prometheus and Loki push URLs and users of a Grafana
+    Cloud stack (grafana.com > stack > Prometheus / Loki > Details) and an access policy token with metrics:write and
+    logs:write (see perf/README.md).
+  EOT
+  type = object({
+    prometheus_url  = string
+    prometheus_user = string
+    loki_url        = string
+    loki_user       = string
+    token           = string
+  })
+  sensitive = true
+}

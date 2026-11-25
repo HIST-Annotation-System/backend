@@ -50,3 +50,100 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
+
+  # Pushes host metrics, container metrics and every container's log to Grafana Cloud (perf/README.md). It reads the
+  # host and the Docker socket read-only, and is memory-capped so it can't starve the API on this 2 GB host.
+  alloy:
+    image: grafana/alloy:v1.22.0
+    command: [ "run", "--storage.path=/var/lib/alloy/data", "/etc/alloy/config.alloy" ]
+    # GRAFANA_CLOUD_* come with the app's settings.
+    env_file: backend.env
+    configs:
+      - source: alloy
+        target: /etc/alloy/config.alloy
+    # The host's cgroups, so cAdvisor sees every container.
+    cgroup: host
+    volumes:
+      - /:/host/root:ro,rslave
+      - /proc:/host/proc:ro
+      - /sys:/sys:ro
+      - /run/udev/data:/run/udev/data:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/lib/docker:/var/lib/docker:ro
+      # Where it stopped reading each log, so a recreated container doesn't send old lines again.
+      - alloy_data:/var/lib/alloy/data
+    mem_limit: 200m
+    cpus: "0.5"
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+volumes:
+  alloy_data:
+
+configs:
+  alloy:
+    content: |
+      // Host metrics (node exporter), container metrics (cAdvisor) and every container's log, pushed to Grafana Cloud.
+      prometheus.exporter.unix "host" {
+        procfs_path    = "/host/proc"
+        rootfs_path    = "/host/root"
+        set_collectors = ["cpu", "diskstats", "filesystem", "loadavg", "meminfo", "netdev", "pressure", "vmstat"]
+      }
+
+      prometheus.exporter.cadvisor "containers" {
+        docker_only      = true
+        enabled_metrics  = ["cpu", "diskIO", "memory", "network", "oom_event"]
+        storage_duration = "2m"
+      }
+
+      prometheus.scrape "local" {
+        targets         = array.concat(prometheus.exporter.unix.host.targets, prometheus.exporter.cadvisor.containers.targets)
+        scrape_interval = "15s"
+        forward_to      = [prometheus.remote_write.grafana_cloud.receiver]
+      }
+
+      prometheus.remote_write "grafana_cloud" {
+        external_labels = { host = "wsi-backend" }
+        endpoint {
+          url = sys.env("GRAFANA_CLOUD_PROMETHEUS_URL")
+          basic_auth {
+            username = sys.env("GRAFANA_CLOUD_PROMETHEUS_USER")
+            password = sys.env("GRAFANA_CLOUD_TOKEN")
+          }
+        }
+      }
+
+      discovery.docker "containers" {
+        host = "unix:///var/run/docker.sock"
+      }
+
+      discovery.relabel "containers" {
+        targets = []
+        rule {
+          source_labels = ["__meta_docker_container_name"]
+          regex         = "/(.*)"
+          target_label  = "container"
+        }
+      }
+
+      loki.source.docker "containers" {
+        host          = "unix:///var/run/docker.sock"
+        targets       = discovery.docker.containers.targets
+        relabel_rules = discovery.relabel.containers.rules
+        forward_to    = [loki.write.grafana_cloud.receiver]
+      }
+
+      loki.write "grafana_cloud" {
+        external_labels = { host = "wsi-backend" }
+        endpoint {
+          url = sys.env("GRAFANA_CLOUD_LOKI_URL")
+          basic_auth {
+            username = sys.env("GRAFANA_CLOUD_LOKI_USER")
+            password = sys.env("GRAFANA_CLOUD_TOKEN")
+          }
+        }
+      }

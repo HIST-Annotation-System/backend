@@ -32,3 +32,6 @@ htmlcov/
 
 # macOS
 .DS_Store
+
+# k6 run outputs (perf/run.ps1)
+perf/results/

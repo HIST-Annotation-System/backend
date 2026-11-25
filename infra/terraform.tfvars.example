@@ -5,3 +5,11 @@ db_password = "CHANGE_ME_use_a_strong_password"
 bucket_name = "my-unique-bucket-name"
 # The app's administrator, created by the first deploy if the database has none.
 admin_password = "CHANGE_ME_too"
+# Monitoring (perf/README.md): grafana.com > your stack > Prometheus / Loki > Details, and an access policy token.
+grafana_cloud = {
+  prometheus_url  = "https://prometheus-prod-XX-prod-eu-north-0.grafana.net/api/prom/push"
+  prometheus_user = "123456"
+  loki_url        = "https://logs-prod-XXX.grafana.net/loki/api/v1/push"
+  loki_user       = "654321"
+  token           = "glc_CHANGE_ME"
+}
