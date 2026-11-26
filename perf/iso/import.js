@@ -5,7 +5,7 @@
 
 import { fail, sleep } from 'k6';
 import { Trend } from 'k6/metrics';
-import { Client } from '../lib/api.js';
+import { Client, orAbort } from '../lib/api.js';
 import { IMPORT_SLIDE_PREFIX, ORGANIZATION, SUMMARY_TREND_STATS, SYSTEM_TAGS, requireEnv } from '../lib/config.js';
 
 const POLL_S = 2;
@@ -35,6 +35,10 @@ export function setup() {
 }
 
 export default function () {
+  orAbort(() => work());
+}
+
+function work() {
   const client = admin();
   const organizations = client.must(client.get('/organizations/', 'GET /organizations/', 'setup'), 'organizations');
   const organization = organizations.find((item) => item.name === ORGANIZATION);

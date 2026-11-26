@@ -3,7 +3,7 @@
 //   k6 run -e ALL=1 setup/cleanup.js     end of the test campaign: everything seed.js made, including the test
 //                                        slides' files in the bucket, the accounts and the organization
 
-import { Client } from '../lib/api.js';
+import { Client, orAbort } from '../lib/api.js';
 import {
   GPU_FOLDER_PREFIX,
   IMPORT_SLIDE_PREFIX,
@@ -21,6 +21,10 @@ export const options = {
 const ALL = Boolean(__ENV.ALL);
 
 export default function () {
+  orAbort(() => work());
+}
+
+function work() {
   requireEnv('K6_USER_PASSWORD', ...(ALL ? ['K6_ADMIN_USER', 'K6_ADMIN_PASSWORD'] : []));
   const manager = new Client(MANAGER, USER_PASSWORD);
   manager.login();

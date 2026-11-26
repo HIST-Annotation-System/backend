@@ -1,4 +1,5 @@
 import http from 'k6/http';
+import exec from 'k6/execution';
 import { check, fail } from 'k6';
 import { API } from './config.js';
 
@@ -72,3 +73,15 @@ export const uuid = () => crypto.randomUUID();
 
 export const randomInt = (min, max) => Math.floor(min + Math.random() * (max - min + 1));
 export const randomItem = (items) => items[Math.floor(Math.random() * items.length)];
+
+/**
+ * Runs a one-shot script's work and ends the whole test on any failure. A failure inside an iteration only ends that
+ * iteration and k6 still exits 0, so perf.ps1 would report a broken seed, cleanup or GPU run as passed.
+ */
+export function orAbort(work) {
+  try {
+    work();
+  } catch (error) {
+    exec.test.abort(String(error));
+  }
+}

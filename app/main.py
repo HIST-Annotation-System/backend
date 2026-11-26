@@ -6,8 +6,9 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
 from app.core.logging import configure_logging
-from app.dependencies.resources import build_resources
+from app.dependencies.resources import MAX_REQUESTS_IN_PROGRESS, build_resources
 from app.exceptions.errors import register_exception_handlers
+from app.middleware.concurrency_limit import ConcurrencyLimitMiddleware
 from app.middleware.request_logging import RequestLoggingMiddleware
 from app.services.hotspots import fail_interrupted_batches
 from app.services.slide_ingest import fail_interrupted_ingests
@@ -47,6 +48,8 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
+    # Innermost, so a request turned away as busy is still logged and gets CORS headers.
+    app.add_middleware(ConcurrencyLimitMiddleware, limit=MAX_REQUESTS_IN_PROGRESS)
     app.add_middleware(RequestLoggingMiddleware)
 
     if settings.BACKEND_CORS_ORIGINS:

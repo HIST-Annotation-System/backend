@@ -33,5 +33,7 @@ htmlcov/
 # macOS
 .DS_Store
 
-# k6 run outputs (perf/run.ps1)
+# k6 runs (perf/perf.ps1): outputs, generated password, downloaded test slides
 perf/results/
+perf/.local.env
+perf/.cache/
