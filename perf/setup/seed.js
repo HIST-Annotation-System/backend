@@ -5,7 +5,7 @@
 //   k6 run -e SLIDE_KEYS=perf/CMU-1.svs,perf/CMU-2.svs,perf/Mirax2.2-1/ setup/seed.js
 
 import { fail, sleep } from 'k6';
-import { Client, uuid } from '../lib/api.js';
+import { Client, orAbort, uuid } from '../lib/api.js';
 import {
   EXPERT_COUNT,
   MANAGER,
@@ -26,6 +26,10 @@ export const options = {
 };
 
 export default function () {
+  orAbort(() => work());
+}
+
+function work() {
   requireEnv('K6_ADMIN_USER', 'K6_ADMIN_PASSWORD', 'K6_USER_PASSWORD');
   const admin = new Client(__ENV.K6_ADMIN_USER, __ENV.K6_ADMIN_PASSWORD);
   admin.login();
@@ -144,7 +148,10 @@ function ensurePool(manager) {
     if (batch.status !== 'done') fail(`pool batch ${batch.status}: ${batch.error_message}`);
   }
 
-  const started = Date.now();
+  // No hotspot segmented for this long: the GPU worker is not running (the first job also loads the model).
+  const stallMs = 15 * 60 * 1000;
+  let progressAt = Date.now();
+  let lastDone = -1;
   for (;;) {
     const pool = listPool();
     const done = pool.filter((item) => item.segmentation_status === 'done').length;
@@ -154,7 +161,11 @@ function ensurePool(manager) {
       if (done < POOL_SIZE) fail('Some pool hotspots failed segmentation: run the seed again to replace them.');
       return;
     }
-    if (Date.now() - started > TIMEOUT_MS) fail('Pool still pending: is the GPU worker running?');
+    if (done !== lastDone) {
+      lastDone = done;
+      progressAt = Date.now();
+    }
+    if (Date.now() - progressAt > stallMs) fail('Pool hotspots still pending: is the GPU worker running?');
     sleep(POLL_S);
   }
 }

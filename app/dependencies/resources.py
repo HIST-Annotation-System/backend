@@ -33,6 +33,12 @@ DB_MAX_OVERFLOW = 5
 # Hotspot batches are cut out one at a time, so they never compete with ingestion or with each other.
 HOTSPOT_POOL_WORKERS = 1
 HOTSPOT_POOL_THREAD_NAME_PREFIX = "hotspots"
+# A request takes a connection at its first query and keeps it to the end, but runs its dependencies and endpoint as
+# separate steps on the shared threadpool (40 threads). With more requests in progress than connections, those waiting
+# for a connection can hold every thread while those holding one wait for a thread, and nothing moves until the pool's
+# 30 s timeout (seen in the k6 tests: a burst of tiles stopped the API for minutes). So no more requests run at once
+# than there are connections left after the background threads: ingestion, hotspot batches, segmentation dispatcher.
+MAX_REQUESTS_IN_PROGRESS = DB_POOL_SIZE + DB_MAX_OVERFLOW - INGEST_POOL_WORKERS - HOTSPOT_POOL_WORKERS - 1
 
 
 @dataclass(frozen=True)

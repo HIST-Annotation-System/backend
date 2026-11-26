@@ -5,13 +5,15 @@
 
 import { fail, sleep } from 'k6';
 import { Trend } from 'k6/metrics';
-import { Client, uuid } from '../lib/api.js';
+import { Client, orAbort, uuid } from '../lib/api.js';
 import { GPU_FOLDER_PREFIX, MANAGER, SUMMARY_TREND_STATS, SYSTEM_TAGS, USER_PASSWORD, requireEnv } from '../lib/config.js';
 import { boxGrid, largestSlide, readSlides } from '../lib/data.js';
 
 const HOTSPOTS = Number(__ENV.GPU_HOTSPOTS || 30);
 const POLL_S = 5;
 const TIMEOUT_MS = 90 * 60 * 1000;
+// No hotspot segmented for this long: the GPU worker is not running (the first job also loads the model).
+const STALL_MS = 15 * 60 * 1000;
 
 // Batch request -> all hotspots cut out and stored.
 const batchDuration = new Trend('batch_duration', true);
@@ -40,7 +42,11 @@ export function setup() {
   return { slide: largestSlide(readSlides(client)), folderId: folder.id };
 }
 
-export default function ({ slide, folderId }) {
+export default function (data) {
+  orAbort(() => work(data));
+}
+
+function work({ slide, folderId }) {
   const client = new Client(MANAGER, USER_PASSWORD);
   client.login();
   const boxes = boxGrid(slide).sort(() => Math.random() - 0.5).slice(0, HOTSPOTS);
@@ -63,17 +69,21 @@ export default function ({ slide, folderId }) {
   batchDuration.add(Date.now() - started);
 
   const finished = new Set();
+  let progressAt = Date.now();
   for (;;) {
     const hotspots = client.must(client.get(`/hotspots?folder_id=${folderId}`, 'GET /hotspots?folder_id'), 'hotspots');
     for (const hotspot of hotspots) {
       if (finished.has(hotspot.id) || hotspot.segmentation_status === 'pending') continue;
       finished.add(hotspot.id);
+      progressAt = Date.now();
       if (hotspot.segmentation_status === 'done') segmentationLatency.add(Date.now() - started);
       else console.warn(`hotspot ${hotspot.id}: ${hotspot.segmentation_status} ${hotspot.segmentation_error}`);
     }
     console.log(`segmented ${finished.size}/${hotspots.length}`);
     if (finished.size === hotspots.length) break;
-    if (Date.now() - started > TIMEOUT_MS) fail(`${hotspots.length - finished.size} hotspots still pending: is the GPU worker running?`);
+    if (Date.now() - progressAt > STALL_MS || Date.now() - started > TIMEOUT_MS) {
+      fail(`${hotspots.length - finished.size} hotspots still pending: is the GPU worker running?`);
+    }
     sleep(POLL_S);
   }
   drainDuration.add(Date.now() - started);
