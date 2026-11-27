@@ -8,7 +8,15 @@ import openslide
 from openslide.deepzoom import DeepZoomGenerator
 from PIL import Image
 
-from app.exceptions.errors import ConflictError, InvalidInputError, NotFoundError, SlidePreparingError, StorageError
+from app.exceptions.errors import (
+    ConflictError,
+    ForbiddenError,
+    InvalidInputError,
+    NotFoundError,
+    SlidePreparingError,
+    StorageError,
+)
+from app.models.account import Account, Role
 from app.models.slide import Slide, SlideStatus
 from app.repositories.slides import SlideRepository
 from app.schemas.slides import REGION_MAX_SIZE, RegionQuery, SlideDetail, SlideRead, slide_version
@@ -36,6 +44,7 @@ DZI_OVERLAP = 1
 SLIDE_HANDLE_CACHE_SIZE = 16
 SLIDE_NOT_FOUND = "Slide {slide_id} does not exist."
 SLIDE_MODIFIED = "Slide {slide_id} was changed by someone else in the meantime (it is now named '{name}')."
+GLOBAL_SLIDE_LOCKED = "'{name}' is shared by every organization: only the system administrator can change it."
 SLIDE_NOT_FOUND_CODE = "slide_not_found"
 SLIDE_MODIFIED_CODE = "slide_modified"
 SLIDE_NOT_READY = "Slide {slide_id} is not ready (status: {status})."
@@ -124,13 +133,15 @@ class SlideService:
     def get_slide(self, slide_id: uuid.UUID) -> SlideDetail:
         return SlideDetail.model_validate(require_slide(self._slides, slide_id))
 
-    def rename_slide(self, slide_id: uuid.UUID, name: str, expected_version: str | None = None) -> SlideRead:
-        slide = self._lock_unchanged(slide_id, expected_version)
+    def rename_slide(
+        self, slide_id: uuid.UUID, name: str, actor: Account, expected_version: str | None = None
+    ) -> SlideRead:
+        slide = self._lock_unchanged(slide_id, expected_version, actor)
         slide.name = name
         return SlideRead.model_validate(self._slides.save(slide))
 
-    def delete_slide(self, slide_id: uuid.UUID, expected_version: str | None = None) -> None:
-        slide = self._lock_unchanged(slide_id, expected_version)
+    def delete_slide(self, slide_id: uuid.UUID, actor: Account, expected_version: str | None = None) -> None:
+        slide = self._lock_unchanged(slide_id, expected_version, actor)
         self._handles.evict(slide_id)
         self._files.purge(slide_id)
         slide_prefix = SLIDE_OBJECTS_PREFIX.format(slide_id=slide_id)
@@ -192,9 +203,12 @@ class SlideService:
             raise InvalidInputError(SQUARE_OUTSIDE_SLIDE)
         return read_region_image(slide, x, y, size, size, max_size)
 
-    def _lock_unchanged(self, slide_id: uuid.UUID, expected_version: str | None) -> Slide:
-        """The slide, row-locked, provided it still is the version the client last saw (if it sent one)."""
+    def _lock_unchanged(self, slide_id: uuid.UUID, expected_version: str | None, actor: Account) -> Slide:
+        """The slide, row-locked, provided it still is the version the client last saw (if it sent one) and `actor`
+        may change it: a global slide is shared by every organization, so only the system admin changes it."""
         slide = require_slide(self._slides, slide_id, for_update=True)
+        if slide.organization_id is None and actor.role != Role.ADMIN:
+            raise ForbiddenError(GLOBAL_SLIDE_LOCKED.format(name=slide.name))
         if expected_version is not None and expected_version != slide_version(slide.name):
             raise ConflictError(SLIDE_MODIFIED.format(slide_id=slide_id, name=slide.name), SLIDE_MODIFIED_CODE)
         return slide

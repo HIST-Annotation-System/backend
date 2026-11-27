@@ -1,11 +1,11 @@
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Header, Query, Request, Response, status
+from fastapi import APIRouter, Header, Query, Request, Response, status
 
 from app.core.constants import CONTENT_DISPOSITION_ATTACHMENT, MEDIA_TYPE_XML
 from app.core.http_cache import etag_json_response, parse_if_match
-from app.dependencies.auth import require_manager
+from app.dependencies.auth import ManagerDep
 from app.dependencies.services import SlideServiceDep
 from app.schemas.slides import RegionQuery, SlideDetail, SlideRead, SlideRenameRequest
 from app.services.slide_analysis import MEDIA_TYPE_JPEG, MEDIA_TYPE_PNG
@@ -31,16 +31,18 @@ def get_slide(slide_id: uuid.UUID, request: Request, service: SlideServiceDep) -
     return etag_json_response(request, service.get_slide(slide_id).model_dump(mode="json"))
 
 
-@router.patch("/{slide_id}", response_model=SlideRead, dependencies=[Depends(require_manager)])
+@router.patch("/{slide_id}", response_model=SlideRead)
 def rename_slide(
-    slide_id: uuid.UUID, req: SlideRenameRequest, service: SlideServiceDep, if_match: IfMatch = None
+    slide_id: uuid.UUID, req: SlideRenameRequest, service: SlideServiceDep, user: ManagerDep, if_match: IfMatch = None
 ) -> SlideRead:
-    return service.rename_slide(slide_id, req.name, parse_if_match(if_match))
+    """Administrators; a global slide only the system admin (403)."""
+    return service.rename_slide(slide_id, req.name, user, parse_if_match(if_match))
 
 
-@router.delete("/{slide_id}", status_code=status.HTTP_204_NO_CONTENT, dependencies=[Depends(require_manager)])
-def delete_slide(slide_id: uuid.UUID, service: SlideServiceDep, if_match: IfMatch = None) -> None:
-    service.delete_slide(slide_id, parse_if_match(if_match))
+@router.delete("/{slide_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_slide(slide_id: uuid.UUID, service: SlideServiceDep, user: ManagerDep, if_match: IfMatch = None) -> None:
+    """Administrators; a global slide only the system admin (403)."""
+    service.delete_slide(slide_id, user, parse_if_match(if_match))
 
 
 @router.get("/{slide_id}/image.dzi")

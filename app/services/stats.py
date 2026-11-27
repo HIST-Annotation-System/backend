@@ -25,7 +25,8 @@ SECONDS_PER_HOUR = 3600
 
 
 class StatsService:
-    """Admin observability: where hotspots are in the review, and who is annotating what."""
+    """Admin observability: where hotspots are in the review, and who is annotating what (in every organization,
+    or the one the repository is scoped to)."""
 
     def __init__(self, stats: StatsRepository) -> None:
         self._stats = stats
@@ -50,7 +51,7 @@ class StatsService:
             slides=[SlideStatusCount(status=status, count=count) for status, count, _ in slides],
             slides_total_bytes=sum(size or 0 for _, _, size in slides),
             accounts=AccountCounts(
-                admins=sum(1 for account in accounts if account.role == Role.ADMIN),
+                admins=sum(1 for account in accounts if account.role in (Role.ADMIN, Role.ORG_ADMIN)),
                 annotators=sum(1 for account in accounts if account.role == Role.ANNOTATOR),
                 pending_first_login=sum(1 for account in accounts if account.is_first_login),
             ),
@@ -124,9 +125,10 @@ class StatsService:
             since,
             HotspotAnnotation.kind == AnnotationKind.CELL,
             HotspotAnnotation.source == AnnotationSource.HUMAN,
+            self._stats.in_scope(HotspotAnnotation.hotspot_id),
         )
-        reannotated = self._stats.daily_counts(Hotspot.reannotated_at, since)
-        created = self._stats.daily_counts(Hotspot.created_at, since)
+        reannotated = self._stats.daily_counts(Hotspot.reannotated_at, since, self._stats.in_scope(Hotspot.id))
+        created = self._stats.daily_counts(Hotspot.created_at, since, self._stats.in_scope(Hotspot.id))
         days = [first_day + timedelta(days=offset) for offset in range(ACTIVITY_DAYS)]
         return [
             DailyActivity(
