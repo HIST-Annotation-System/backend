@@ -5,7 +5,8 @@ from pathlib import PurePosixPath
 
 from sqlalchemy.exc import IntegrityError
 
-from app.exceptions.errors import ConflictError, InvalidInputError
+from app.exceptions.errors import ConflictError, ForbiddenError, InvalidInputError
+from app.models.account import Account, Role
 from app.models.slide import Slide, SlideStatus
 from app.repositories.slides import SlideRepository
 from app.schemas.upload import (
@@ -25,6 +26,7 @@ UNSAFE_FILENAME_CHARACTERS = r"[^A-Za-z0-9._-]+"
 DEFAULT_FILENAME_STEM = "slide"
 SLIDE_NOT_UPLOADING = "Slide {slide_id} is not accepting uploads."
 SLIDE_NOT_UPLOADING_CODE = "slide_not_uploading"
+NOT_YOUR_UPLOAD = "Only the uploader or an administrator can cancel this upload."
 OVERLAPS_IMPORTED = "'{key}' overlaps the files of slide '{name}'."
 DUPLICATE_SLIDE = "This file is already in the library as slide '{name}'."
 DUPLICATE_SLIDE_CODE = "duplicate_slide"
@@ -45,8 +47,9 @@ class SlideUploadService:
         file_size: int | None = None,
         allow_duplicate: bool = False,
         *,
-        organization_id: int,
+        organization_id: int | None,
     ) -> StartUploadResponse:
+        """`organization_id` None makes a global slide (the router lets only the system admin do that)."""
         original = PurePosixPath(filename.replace("\\", "/")).name
         stem, suffix = validate_upload_name(original)
         if file_size is not None and not allow_duplicate:
@@ -108,9 +111,17 @@ class SlideUploadService:
             ]
         )
 
-    def cancel_upload(self, slide_id: uuid.UUID) -> None:
-        """Aborts an in-progress browser upload and drops the slide record created for it."""
+    def cancel_upload(self, slide_id: uuid.UUID, user: Account) -> None:
+        """Aborts an in-progress browser upload and drops the slide record created for it. Annotators who may upload
+        cancel only their own uploads, an organization's admin any of their organization's, and the system admin any
+        (global ones included)."""
         slide = self._uploading_slide(slide_id, for_update=True)
+        manages = user.role == Role.ADMIN or (
+            user.role == Role.ORG_ADMIN and slide.organization_id is not None
+            and slide.organization_id == user.organization_id
+        )
+        if not manages and slide.uploaded_by_id != user.id:
+            raise ForbiddenError(NOT_YOUR_UPLOAD)
         self._storage.abort_multipart_uploads(slide.storage_key)
         self._slides.delete(slide)
 

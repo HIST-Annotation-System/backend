@@ -5,8 +5,8 @@ from typing import Any
 import pytest
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.exceptions.errors import ConflictError, InvalidInputError, NotFoundError, SlidePreparingError
-from app.models import Hotspot
+from app.exceptions.errors import ConflictError, ForbiddenError, InvalidInputError, NotFoundError, SlidePreparingError
+from app.models import Hotspot, Role
 from app.models.hotspot import HotspotImageType, SegmentationStatus
 from app.models.slide import Slide, SlideStatus
 from app.repositories.slides import SlideRepository
@@ -92,6 +92,7 @@ class SlideWorld:
     def __init__(self, session: Session, factory: Factory) -> None:
         self.session = session
         self.org = factory.organization()
+        self.admin = factory.account(Role.ORG_ADMIN, self.org)
         self.storage = DeletingStorage()
         self.files = FakeFiles()
         self.handles = SlideHandleCache()
@@ -123,29 +124,29 @@ def sw(session: Session, factory: Factory) -> SlideWorld:
 class TestRenameAndDelete:
     def test_rename_with_the_current_version(self, sw: SlideWorld) -> None:
         slide = sw.slide()
-        assert sw.service.rename_slide(slide.id, "New", slide_version("Biopsy")).name == "New"
+        assert sw.service.rename_slide(slide.id, "New", sw.admin, slide_version("Biopsy")).name == "New"
 
     def test_rename_without_a_version_skips_the_check(self, sw: SlideWorld) -> None:
-        assert sw.service.rename_slide(sw.slide().id, "New").name == "New"
+        assert sw.service.rename_slide(sw.slide().id, "New", sw.admin).name == "New"
 
     def test_stale_version_is_a_conflict(self, sw: SlideWorld) -> None:
         slide = sw.slide()
-        sw.service.rename_slide(slide.id, "Changed by someone else")
+        sw.service.rename_slide(slide.id, "Changed by someone else", sw.admin)
         with pytest.raises(ConflictError) as error:
-            sw.service.rename_slide(slide.id, "Mine", slide_version("Biopsy"))
+            sw.service.rename_slide(slide.id, "Mine", sw.admin, slide_version("Biopsy"))
         assert error.value.code == "slide_modified"
         with pytest.raises(ConflictError):
-            sw.service.delete_slide(slide.id, slide_version("Biopsy"))
+            sw.service.delete_slide(slide.id, sw.admin, slide_version("Biopsy"))
 
     def test_unknown_slide(self, sw: SlideWorld) -> None:
         with pytest.raises(NotFoundError) as error:
-            sw.service.rename_slide(uuid.uuid4(), "x")
+            sw.service.rename_slide(uuid.uuid4(), "x", sw.admin)
         assert error.value.code == "slide_not_found"
 
     def test_delete_removes_files_handles_and_objects(self, sw: SlideWorld) -> None:
         slide = sw.slide()
         sw.handles.put(slide.id, opened())
-        sw.service.delete_slide(slide.id)
+        sw.service.delete_slide(slide.id, sw.admin)
         assert sw.files.purged == [slide.id]
         assert sw.handles.get(slide.id) is None
         assert sw.storage.deleted_prefixes == [f"slides/{slide.id}/"]
@@ -154,17 +155,17 @@ class TestRenameAndDelete:
 
     def test_delete_of_an_unfinished_upload_aborts_it(self, sw: SlideWorld) -> None:
         slide = sw.slide(status=SlideStatus.UPLOADING)
-        sw.service.delete_slide(slide.id)
+        sw.service.delete_slide(slide.id, sw.admin)
         assert sw.storage.aborted == [slide.storage_key]
 
     def test_delete_of_an_imported_file_removes_it(self, sw: SlideWorld) -> None:
         slide = sw.slide(storage_key="imports/case.svs")
-        sw.service.delete_slide(slide.id)
+        sw.service.delete_slide(slide.id, sw.admin)
         assert sw.storage.deleted_objects == ["imports/case.svs"]
 
     def test_delete_of_an_imported_folder_removes_the_folder(self, sw: SlideWorld) -> None:
         slide = sw.slide(storage_key="imports/mrxs/")
-        sw.service.delete_slide(slide.id)
+        sw.service.delete_slide(slide.id, sw.admin)
         assert sw.storage.deleted_prefixes[-1] == "imports/mrxs/"
 
     def test_other_organizations_slides_are_invisible(self, sw: SlideWorld, factory: Factory) -> None:
@@ -175,6 +176,46 @@ class TestRenameAndDelete:
         assert other.list_slides() == []
         with pytest.raises(NotFoundError):
             other.get_slide(slide.id)
+
+
+class TestGlobalSlides:
+    """Slides of no organization: every organization sees them, only the system admin changes them."""
+
+    def test_every_organization_sees_global_slides(self, sw: SlideWorld, factory: Factory, session: Session) -> None:
+        global_slide = sw.slide(organization_id=None, name="Shared", storage_key="slides/g/b.svs")
+        own = sw.slide(name="Own", storage_key="slides/o/b.svs")
+        other = factory.organization()
+        scoped = SlideRepository(session, other.id)
+        assert [slide.id for slide in scoped.list_all()] == [global_slide.id]
+        assert scoped.get(global_slide.id) is not None and scoped.get(own.id) is None
+
+    def test_only_the_system_admin_changes_a_global_slide(self, sw: SlideWorld, factory: Factory) -> None:
+        slide = sw.slide(organization_id=None)
+        with pytest.raises(ForbiddenError):
+            sw.service.rename_slide(slide.id, "Mine", sw.admin)
+        with pytest.raises(ForbiddenError):
+            sw.service.delete_slide(slide.id, sw.admin)
+        system_admin = factory.account(Role.ADMIN)
+        assert sw.service.rename_slide(slide.id, "Renamed", system_admin).name == "Renamed"
+        sw.service.delete_slide(slide.id, system_admin)
+        assert sw.repo.get(slide.id) is None
+
+    def test_global_upload_and_its_duplicates(self, sw: SlideWorld) -> None:
+        started = sw.uploads.start_upload("a.svs", file_size=10, organization_id=None)
+        slide = sw.repo.get(started.slide_id)
+        assert slide is not None and slide.organization_id is None
+        slide.status = SlideStatus.READY
+        # An organization already sees the global copy, so uploading the same file there is a duplicate too.
+        with pytest.raises(ConflictError) as error:
+            sw.uploads.start_upload("a.svs", file_size=10, organization_id=sw.org.id)
+        assert error.value.code == "duplicate_slide"
+
+    def test_org_admins_cannot_cancel_a_global_upload(self, sw: SlideWorld, factory: Factory) -> None:
+        system_admin = factory.account(Role.ADMIN)
+        started = sw.uploads.start_upload("a.svs", uploaded_by_id=system_admin.id, organization_id=None)
+        with pytest.raises(ForbiddenError):
+            sw.uploads.cancel_upload(started.slide_id, sw.admin)
+        sw.uploads.cancel_upload(started.slide_id, system_admin)
 
 
 class TestUncachedSlide:
@@ -259,7 +300,7 @@ class TestUploads:
             lambda: sw.uploads.presign_parts(slide.id, "u", 1),
             lambda: sw.uploads.complete_upload(slide.id, "u", {}),
             lambda: sw.uploads.report_progress(slide.id, 1),
-            lambda: sw.uploads.cancel_upload(slide.id),
+            lambda: sw.uploads.cancel_upload(slide.id, sw.admin),
         ):
             with pytest.raises(ConflictError) as error:
                 call()
@@ -267,9 +308,18 @@ class TestUploads:
 
     def test_cancel_aborts_and_drops_the_slide(self, sw: SlideWorld) -> None:
         started = sw.uploads.start_upload("a.svs", organization_id=sw.org.id)
-        sw.uploads.cancel_upload(started.slide_id)
+        sw.uploads.cancel_upload(started.slide_id, sw.admin)
         assert sw.repo.get(started.slide_id) is None
         assert len(sw.storage.aborted) == 1
+
+    def test_annotators_cancel_only_their_own_uploads(self, sw: SlideWorld, factory: Factory) -> None:
+        uploader = factory.account(Role.ANNOTATOR, sw.org)
+        other = factory.account(Role.ANNOTATOR, sw.org)
+        started = sw.uploads.start_upload("a.svs", uploaded_by_id=uploader.id, organization_id=sw.org.id)
+        with pytest.raises(ForbiddenError):
+            sw.uploads.cancel_upload(started.slide_id, other)
+        sw.uploads.cancel_upload(started.slide_id, uploader)
+        assert sw.repo.get(started.slide_id) is None
 
 
 class TestImportFromStorage:

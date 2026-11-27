@@ -3,7 +3,7 @@ from collections.abc import Sequence
 from datetime import date, datetime
 from typing import Any
 
-from sqlalchemy import ColumnElement, Row, and_, case, distinct, func, null, select
+from sqlalchemy import ColumnElement, Row, and_, case, distinct, func, null, or_, select, true
 from sqlalchemy.orm import Session
 
 from app.models.account import Account
@@ -16,10 +16,28 @@ from app.schemas.hotspots import HotspotStatus
 
 
 class StatsRepository:
-    """Read-only aggregates over the whole catalog, for the admin statistics."""
+    """Read-only aggregates for the admin statistics: over the whole catalog, or one organization's part of it.
 
-    def __init__(self, session: Session) -> None:
+    `organization_id` None counts every organization. Otherwise only that organization's folders, hotspots (and the
+    annotations and tags on them), slides and accounts count; cell types and global tags are listed with what the
+    organization did with them.
+    """
+
+    def __init__(self, session: Session, organization_id: int | None = None) -> None:
         self._session = session
+        self.organization_id = organization_id
+
+    def in_scope(self, hotspot_id: Any) -> ColumnElement[bool]:
+        """A condition keeping rows whose `hotspot_id` column names a hotspot of the organization (always true
+        without one)."""
+        if self.organization_id is None:
+            return true()
+        folders = select(HotspotFolder.id).where(HotspotFolder.organization_id == self.organization_id)
+        condition: ColumnElement[bool] = hotspot_id.in_(select(Hotspot.id).where(Hotspot.folder_id.in_(folders)))
+        return condition
+
+    def _folder_in_scope(self) -> ColumnElement[bool]:
+        return true() if self.organization_id is None else HotspotFolder.organization_id == self.organization_id
 
     def hotspot_status_by_folder(self) -> Sequence[Row[tuple[uuid.UUID, str, str | None, int]]]:
         """(folder id, folder name, HotspotStatus value, hotspot count); an empty folder has one row with status
@@ -49,6 +67,7 @@ class StatsRepository:
             )
             .outerjoin(Hotspot, Hotspot.folder_id == HotspotFolder.id)
             .outerjoin(verdicts, verdicts.c.hotspot_id == Hotspot.id)
+            .where(self._folder_in_scope())
             .subquery()
         )
         statement = (
@@ -66,7 +85,9 @@ class StatsRepository:
     def count_annotations(self, unattributed_only: bool = False) -> int:
         """Cell annotations by people (excluded areas and untouched model cells are not work counted here)."""
         statement = select(func.count(HotspotAnnotation.id)).where(
-            HotspotAnnotation.kind == AnnotationKind.CELL, HotspotAnnotation.source == AnnotationSource.HUMAN
+            HotspotAnnotation.kind == AnnotationKind.CELL,
+            HotspotAnnotation.source == AnnotationSource.HUMAN,
+            self.in_scope(HotspotAnnotation.hotspot_id),
         )
         if unattributed_only:
             statement = statement.where(HotspotAnnotation.created_by_id.is_(None))
@@ -75,19 +96,22 @@ class StatsRepository:
     def reannotation_times(self) -> Sequence[Row[tuple[datetime, datetime | None]]]:
         """(created_at, reannotated_at) of every hotspot marked reannotated."""
         return self._session.execute(
-            select(Hotspot.created_at, Hotspot.reannotated_at).where(Hotspot.reannotated_at.is_not(None))
+            select(Hotspot.created_at, Hotspot.reannotated_at).where(
+                Hotspot.reannotated_at.is_not(None), self.in_scope(Hotspot.id)
+            )
         ).all()
 
     def slides_by_status(self) -> Sequence[Row[tuple[SlideStatus, int, int | None]]]:
         """(status, slide count, summed file size)."""
-        return self._session.execute(
-            select(Slide.status, func.count(Slide.id), func.sum(Slide.file_size_bytes)).group_by(Slide.status)
-        ).all()
+        statement = select(Slide.status, func.count(Slide.id), func.sum(Slide.file_size_bytes)).group_by(Slide.status)
+        if self.organization_id is not None:
+            statement = statement.where(Slide.organization_id == self.organization_id)
+        return self._session.execute(statement).all()
 
     def accounts(self) -> Sequence[Row[Any]]:
-        """(id, username, role, is_first_login, first_name, last_name) of every account; the names are None for an
-        account without a profile."""
-        return self._session.execute(
+        """(id, username, role, is_first_login, first_name, last_name) of every account (of the organization's
+        members when scoped); the names are None for an account without a profile."""
+        statement = (
             select(
                 Account.id,
                 Account.username,
@@ -98,28 +122,39 @@ class StatsRepository:
             )
             .outerjoin(AnnotatorProfile, AnnotatorProfile.account_id == Account.id)
             .order_by(Account.username)
-        ).all()
+        )
+        if self.organization_id is not None:
+            statement = statement.where(Account.organization_id == self.organization_id)
+        return self._session.execute(statement).all()
 
     def in_progress_by_account(self) -> dict[int, int]:
         """Account id -> hotspots not yet marked reannotated that hold an annotation of theirs."""
         return self._count_by(
             select(HotspotAnnotation.created_by_id, func.count(distinct(HotspotAnnotation.hotspot_id)))
             .join(Hotspot, Hotspot.id == HotspotAnnotation.hotspot_id)
-            .where(HotspotAnnotation.created_by_id.is_not(None), Hotspot.reannotated_at.is_(None))
+            .where(
+                HotspotAnnotation.created_by_id.is_not(None),
+                Hotspot.reannotated_at.is_(None),
+                self.in_scope(Hotspot.id),
+            )
             .group_by(HotspotAnnotation.created_by_id)
         )
 
     def finished_by_account(self) -> dict[int, int]:
         return self._count_by(
             select(Hotspot.reannotated_by_id, func.count(Hotspot.id))
-            .where(Hotspot.reannotated_by_id.is_not(None), Hotspot.reannotated_at.is_not(None))
+            .where(
+                Hotspot.reannotated_by_id.is_not(None),
+                Hotspot.reannotated_at.is_not(None),
+                self.in_scope(Hotspot.id),
+            )
             .group_by(Hotspot.reannotated_by_id)
         )
 
     def verdicts_by_account(self) -> dict[int, int]:
         return self._count_by(
             select(HotspotTag.added_by_id, func.count())
-            .where(HotspotTag.added_by_id.is_not(None))
+            .where(HotspotTag.added_by_id.is_not(None), self.in_scope(HotspotTag.hotspot_id))
             .group_by(HotspotTag.added_by_id)
         )
 
@@ -132,14 +167,18 @@ class StatsRepository:
                 func.count(HotspotAnnotation.id).filter(HotspotAnnotation.created_at >= recent_since),
                 func.max(HotspotAnnotation.created_at),
             )
-            .where(HotspotAnnotation.created_by_id.is_not(None), HotspotAnnotation.kind == AnnotationKind.CELL)
+            .where(
+                HotspotAnnotation.created_by_id.is_not(None),
+                HotspotAnnotation.kind == AnnotationKind.CELL,
+                self.in_scope(HotspotAnnotation.hotspot_id),
+            )
             .group_by(HotspotAnnotation.created_by_id)
         ).all()
 
     def last_reannotated_by_account(self) -> dict[int, datetime]:
         rows = self._session.execute(
             select(Hotspot.reannotated_by_id, func.max(Hotspot.reannotated_at))
-            .where(Hotspot.reannotated_by_id.is_not(None))
+            .where(Hotspot.reannotated_by_id.is_not(None), self.in_scope(Hotspot.id))
             .group_by(Hotspot.reannotated_by_id)
         ).all()
         return {account_id: latest for account_id, latest in rows}
@@ -154,6 +193,7 @@ class StatsRepository:
                 and_(
                     HotspotAnnotation.cell_type_id == CellType.id,
                     HotspotAnnotation.source == AnnotationSource.HUMAN,
+                    self.in_scope(HotspotAnnotation.hotspot_id),
                 ),
             )
             .group_by(CellType.id, CellType.name)
@@ -161,13 +201,19 @@ class StatsRepository:
         ).all()
 
     def tag_usage(self) -> Sequence[Row[tuple[int, str, TagDimension | None, int]]]:
-        """(id, name, dimension, tagged hotspot count) of every tag."""
-        return self._session.execute(
+        """(id, name, dimension, tagged hotspot count) of every tag (the global ones and the organization's when
+        scoped)."""
+        statement = (
             select(Tag.id, Tag.name, Tag.dimension, func.count(HotspotTag.hotspot_id))
-            .outerjoin(HotspotTag, HotspotTag.tag_id == Tag.id)
+            .outerjoin(HotspotTag, and_(HotspotTag.tag_id == Tag.id, self.in_scope(HotspotTag.hotspot_id)))
             .group_by(Tag.id, Tag.name, Tag.dimension)
             .order_by(Tag.dimension.is_(None), Tag.dimension.desc(), Tag.weight.desc(), Tag.name)
-        ).all()
+        )
+        if self.organization_id is not None:
+            statement = statement.where(
+                or_(Tag.organization_id.is_(None), Tag.organization_id == self.organization_id)
+            )
+        return self._session.execute(statement).all()
 
     def daily_counts(self, column: Any, since: datetime, *where: ColumnElement[bool]) -> dict[date, int]:
         """Day (in the database time zone) -> rows whose `column` timestamp falls on it, from `since` on, among

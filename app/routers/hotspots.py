@@ -63,7 +63,7 @@ def rename_folder(folder_id: uuid.UUID, data: HotspotFolderWrite, service: Hotsp
 
 
 @router.delete("/hotspot-folders/{folder_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_folder(folder_id: uuid.UUID, service: HotspotServiceDep) -> None:
+def delete_folder(folder_id: uuid.UUID, service: HotspotServiceDep, _manager: ManagerDep) -> None:
     service.delete_folder(folder_id)
 
 
@@ -148,11 +148,12 @@ def get_hotspot(hotspot_id: uuid.UUID, service: HotspotServiceDep, user: Current
 def update_hotspot(
     hotspot_id: uuid.UUID, data: HotspotUpdate, service: HotspotServiceDep, user: CurrentUserDep
 ) -> HotspotRead:
+    """Anyone may mark a hotspot reannotated; renaming and moving it are for administrators (403)."""
     return service.update_hotspot(hotspot_id, data, user)
 
 
 @router.delete("/hotspots/{hotspot_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_hotspot(hotspot_id: uuid.UUID, service: HotspotServiceDep) -> None:
+def delete_hotspot(hotspot_id: uuid.UUID, service: HotspotServiceDep, _manager: ManagerDep) -> None:
     service.delete_hotspot(hotspot_id)
 
 

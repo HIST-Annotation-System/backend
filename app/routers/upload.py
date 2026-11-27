@@ -2,9 +2,11 @@ import uuid
 
 from fastapi import APIRouter, Depends, status
 
-from app.dependencies.auth import AdminDep, ManagerDep, require_manager
+from app.dependencies.auth import AdminDep, UploaderDep, require_upload
 from app.dependencies.resources import ResourcesDep
 from app.dependencies.services import OrganizationServiceDep, SlideIngestServiceDep, SlideUploadServiceDep
+from app.exceptions.errors import ForbiddenError
+from app.models.account import Role
 from app.schemas.upload import (
     CompleteUploadRequest,
     ImportFromStorageRequest,
@@ -19,17 +21,29 @@ from app.schemas.upload import (
     UploadProgressRequest,
 )
 
-# Adding slides is a task of the system admin or an organization's admin (into their own organization).
-router = APIRouter(dependencies=[Depends(require_manager)])
+# Administrators and annotators given "can upload files" add slides (into their own organization; the system admin
+# into any). Importing from the bucket is narrowed to the system admin below.
+router = APIRouter(dependencies=[Depends(require_upload)])
+
+GLOBAL_SLIDES_ADMIN_ONLY = "Only the system administrator can add slides for every organization."
 
 
 @router.post("/start", response_model=StartUploadResponse)
 def start_upload(
-    req: StartUploadRequest, admin: ManagerDep, service: SlideUploadServiceDep, organizations: OrganizationServiceDep
+    req: StartUploadRequest,
+    uploader: UploaderDep,
+    service: SlideUploadServiceDep,
+    organizations: OrganizationServiceDep,
 ) -> StartUploadResponse:
-    organization_id = organizations.target_for(admin, req.organization_id)
+    organization_id: int | None
+    if req.is_global:
+        if uploader.role != Role.ADMIN:
+            raise ForbiddenError(GLOBAL_SLIDES_ADMIN_ONLY)
+        organization_id = None
+    else:
+        organization_id = organizations.target_for(uploader, req.organization_id)
     return service.start_upload(
-        req.filename, admin.id, req.file_size, req.allow_duplicate, organization_id=organization_id
+        req.filename, uploader.id, req.file_size, req.allow_duplicate, organization_id=organization_id
     )
 
 
@@ -65,8 +79,8 @@ def list_uploaded_parts(slide_id: uuid.UUID, upload_id: str, service: SlideUploa
 
 
 @router.post("/{slide_id}/cancel", status_code=status.HTTP_204_NO_CONTENT)
-def cancel_upload(slide_id: uuid.UUID, service: SlideUploadServiceDep) -> None:
-    service.cancel_upload(slide_id)
+def cancel_upload(slide_id: uuid.UUID, service: SlideUploadServiceDep, user: UploaderDep) -> None:
+    service.cancel_upload(slide_id, user)
 
 
 # The bucket browser behind imports shows every organization's files, so importing stays with the system admin.

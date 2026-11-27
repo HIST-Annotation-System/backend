@@ -2,7 +2,7 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, Enum, ForeignKey, String, func
+from sqlalchemy import DateTime, Enum, ForeignKey, Index, String, func, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.account import Account
@@ -21,15 +21,33 @@ class TagDimension(enum.StrEnum):
 
 
 class Tag(Base):
-    """A label experts put on hotspots, shared by everyone; a hotspot's score is the sum of its tags' weights.
+    """A label experts put on hotspots; a hotspot's score is the sum of its tags' weights.
 
     Core tags (seeded, one per dimension value) have a dimension; tags created by experts do not, and stack.
+    Global tags (no organization: the core tags and those the system admin creates) are seen by everyone; any other
+    tag belongs to the organization of whoever created it and is seen only there.
     """
 
     __tablename__ = "tags"
+    # A name is unique among the global tags and within an organization; the service also keeps an organization's
+    # tags from repeating a global name, which an index cannot express.
+    __table_args__ = (
+        Index(
+            "uq_tags_global_name",
+            "name",
+            unique=True,
+            postgresql_where=text("organization_id IS NULL"),
+            sqlite_where=text("organization_id IS NULL"),
+        ),
+        Index("uq_tags_organization_name", "organization_id", "name", unique=True),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    name: Mapped[str] = mapped_column(String(TAG_NAME_MAX_LENGTH), unique=True)
+    name: Mapped[str] = mapped_column(String(TAG_NAME_MAX_LENGTH))
+    # Null for global tags.
+    organization_id: Mapped[int | None] = mapped_column(
+        ForeignKey("organizations.id", ondelete="CASCADE"), index=True
+    )
     dimension: Mapped[TagDimension | None] = mapped_column(
         Enum(
             TagDimension,

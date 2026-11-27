@@ -7,8 +7,8 @@ import pytest
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
-from app.exceptions.errors import ConflictError, InvalidInputError, NotFoundError
-from app.models import CellType, HotspotAnnotation, Role
+from app.exceptions.errors import ConflictError, ForbiddenError, InvalidInputError, NotFoundError
+from app.models import Account, CellType, HotspotAnnotation, Organization, Role
 from app.models.hotspot import AnnotationKind
 from app.models.tag import TagDimension
 from app.repositories.cell_types import CellTypeRepository
@@ -242,30 +242,35 @@ class TestTags:
         with pytest.raises(ConflictError):
             service.create_tag(TagCreate(name="Wrong", weight=1), factory.account(Role.ADMIN))
 
-    def test_core_tags_can_only_be_reweighted(self, service: TagService, core: dict[str, int]) -> None:
+    def test_core_tags_can_only_be_reweighted(
+        self, service: TagService, core: dict[str, int], factory: Factory
+    ) -> None:
+        admin = factory.account(Role.ADMIN)
         with pytest.raises(ConflictError, match="core tag"):
-            service.update_tag(core["wrong"], TagUpdate(name="Incorrect"))
+            service.update_tag(core["wrong"], TagUpdate(name="Incorrect"), admin)
         with pytest.raises(ConflictError, match="core tag"):
-            service.delete_tag(core["wrong"])
-        assert service.update_tag(core["wrong"], TagUpdate(name="Wrong", weight=25)).weight == 25
+            service.delete_tag(core["wrong"], admin)
+        assert service.update_tag(core["wrong"], TagUpdate(name="Wrong", weight=25), admin).weight == 25
 
     def test_lowering_a_core_tag_under_a_custom_tag_is_refused(
         self, service: TagService, core: dict[str, int], factory: Factory
     ) -> None:
-        service.create_tag(TagCreate(name="Mitosis", weight=8), factory.account(Role.ADMIN))
+        admin = factory.account(Role.ADMIN)
+        service.create_tag(TagCreate(name="Mitosis", weight=8), admin)
         with pytest.raises(ConflictError, match="Mitosis"):
-            service.update_tag(core["low"], TagUpdate(weight=8))
-        assert service.update_tag(core["low"], TagUpdate(weight=9)).weight == 9
+            service.update_tag(core["low"], TagUpdate(weight=8), admin)
+        assert service.update_tag(core["low"], TagUpdate(weight=9), admin).weight == 9
 
     def test_custom_tag_rename_and_reweight(self, service: TagService, core: dict[str, int], factory: Factory) -> None:
-        tag = service.create_tag(TagCreate(name="A", weight=1), factory.account(Role.ADMIN))
-        updated = service.update_tag(tag.id, TagUpdate(name="B", weight=2))
+        admin = factory.account(Role.ADMIN)
+        tag = service.create_tag(TagCreate(name="A", weight=1), admin)
+        updated = service.update_tag(tag.id, TagUpdate(name="B", weight=2), admin)
         assert (updated.name, updated.weight) == ("B", 2)
         with pytest.raises(InvalidInputError):
-            service.update_tag(tag.id, TagUpdate(weight=50))
-        service.delete_tag(tag.id)
+            service.update_tag(tag.id, TagUpdate(weight=50), admin)
+        service.delete_tag(tag.id, admin)
         with pytest.raises(NotFoundError):
-            service.update_tag(tag.id, TagUpdate(weight=1))
+            service.update_tag(tag.id, TagUpdate(weight=1), admin)
 
     def test_core_tag_replaces_the_one_of_its_dimension(
         self, service: TagService, core: dict[str, int], factory: Factory
@@ -328,3 +333,97 @@ class TestTags:
         scoped = TagService(TagRepository(session), HotspotRepository(session, mine.id))
         with pytest.raises(NotFoundError):
             scoped.tag_hotspots([hotspot.id], add=[core["low"]], remove=[], user=factory.account())
+
+
+class TestOrganizationTags:
+    """Global tags (the core ones and the system admin's) are seen by everyone; others belong to an organization."""
+
+    @pytest.fixture
+    def orgs(self, factory: Factory) -> tuple[int, int]:
+        factory.tag("Low importance", 10, TagDimension.IMPORTANCE)
+        return factory.organization().id, factory.organization().id
+
+    def scoped(self, session: Session, organization_id: int | None) -> TagService:
+        return TagService(TagRepository(session, organization_id), HotspotRepository(session, organization_id))
+
+    def member(self, factory: Factory, session: Session, role: Role, organization_id: int) -> Account:
+        organization = session.get(Organization, organization_id)
+        return factory.account(role, organization)
+
+    def test_admin_tags_are_global_and_member_tags_belong_to_their_organization(
+        self, session: Session, factory: Factory, orgs: tuple[int, int]
+    ) -> None:
+        mine, theirs = orgs
+        admin = factory.account(Role.ADMIN)
+        global_tag = self.scoped(session, None).create_tag(TagCreate(name="Global", weight=1), admin)
+        annotator = self.member(factory, session, Role.ANNOTATOR, mine)
+        own = self.scoped(session, mine).create_tag(TagCreate(name="Ours", weight=1), annotator)
+        assert (global_tag.organization_id, own.organization_id) == (None, mine)
+
+        assert {tag.name for tag in self.scoped(session, mine).list_tags()} == {"Low importance", "Global", "Ours"}
+        assert {tag.name for tag in self.scoped(session, theirs).list_tags()} == {"Low importance", "Global"}
+        assert {tag.name for tag in self.scoped(session, None).list_tags()} == {"Low importance", "Global", "Ours"}
+
+    def test_names_are_unique_within_what_people_see(
+        self, session: Session, factory: Factory, orgs: tuple[int, int]
+    ) -> None:
+        mine, theirs = orgs
+        admin = factory.account(Role.ADMIN)
+        self.scoped(session, mine).create_tag(
+            TagCreate(name="Mitosis", weight=1), self.member(factory, session, Role.ANNOTATOR, mine)
+        )
+        # Another organization may use the same name...
+        self.scoped(session, theirs).create_tag(
+            TagCreate(name="Mitosis", weight=1), self.member(factory, session, Role.ANNOTATOR, theirs)
+        )
+        # ...but not repeat a global one, and a global tag can't take a name an organization already uses.
+        with pytest.raises(ConflictError):
+            self.scoped(session, mine).create_tag(
+                TagCreate(name="Low importance", weight=1), self.member(factory, session, Role.ANNOTATOR, mine)
+            )
+        with pytest.raises(ConflictError):
+            self.scoped(session, None).create_tag(TagCreate(name="Mitosis", weight=1), admin)
+
+    def test_who_may_change_a_tag(self, session: Session, factory: Factory, orgs: tuple[int, int]) -> None:
+        mine, theirs = orgs
+        admin = factory.account(Role.ADMIN)
+        global_tag = self.scoped(session, None).create_tag(TagCreate(name="Global", weight=1), admin)
+        org_admin = self.member(factory, session, Role.ORG_ADMIN, mine)
+        own = self.scoped(session, mine).create_tag(TagCreate(name="Ours", weight=1), org_admin)
+        foreign = self.scoped(session, theirs).create_tag(
+            TagCreate(name="Theirs", weight=1), self.member(factory, session, Role.ORG_ADMIN, theirs)
+        )
+        service = self.scoped(session, mine)
+
+        assert service.update_tag(own.id, TagUpdate(weight=2), org_admin).weight == 2
+        with pytest.raises(ForbiddenError):
+            service.update_tag(global_tag.id, TagUpdate(weight=2), org_admin)
+        with pytest.raises(ForbiddenError):
+            service.delete_tag(global_tag.id, org_admin)
+        # Another organization's tag doesn't exist as far as this one can tell.
+        with pytest.raises(NotFoundError):
+            service.delete_tag(foreign.id, org_admin)
+        service.delete_tag(own.id, org_admin)
+
+        # The system admin changes anyone's.
+        self.scoped(session, None).update_tag(foreign.id, TagUpdate(weight=3), admin)
+        self.scoped(session, None).delete_tag(global_tag.id, admin)
+
+    def test_a_tag_goes_only_on_hotspots_of_its_organization(
+        self, session: Session, factory: Factory, orgs: tuple[int, int]
+    ) -> None:
+        mine, theirs = orgs
+        admin = factory.account(Role.ADMIN)
+        own = self.scoped(session, mine).create_tag(
+            TagCreate(name="Ours", weight=1), self.member(factory, session, Role.ANNOTATOR, mine)
+        )
+        foreign_hotspot = factory.hotspot(factory.folder(session.get(Organization, theirs)))
+        # Members don't even see the other organization's tag...
+        with pytest.raises(NotFoundError):
+            self.scoped(session, theirs).tag_hotspots([foreign_hotspot.id], add=[own.id], remove=[], user=admin)
+        # ...and the system admin, who sees every tag, can't mix them up either.
+        with pytest.raises(InvalidInputError, match="another organization"):
+            self.scoped(session, None).tag_hotspots([foreign_hotspot.id], add=[own.id], remove=[], user=admin)
+        own_hotspot = factory.hotspot(factory.folder(session.get(Organization, mine)))
+        self.scoped(session, None).tag_hotspots([own_hotspot.id], add=[own.id], remove=[], user=admin)
+        assert [tag.name for tag in own_hotspot.tags] == ["Ours"]
