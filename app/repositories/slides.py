@@ -2,7 +2,7 @@ import uuid
 from collections.abc import Sequence
 from typing import Any
 
-from sqlalchemy import Select, func, select
+from sqlalchemy import ColumnElement, Select, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models.slide import Slide, SlideStatus
@@ -12,21 +12,22 @@ IMPORT_LOCK_KEY = 0x5A_50_49_01
 
 
 class SlideRepository:
-    """`organization_id` limits every lookup by id and every listing to that organization's slides (None: all)."""
+    """`organization_id` limits every lookup by id and every listing to that organization's slides and the global ones
+    (None: all)."""
 
     def __init__(self, session: Session, organization_id: int | None = None) -> None:
         self._session = session
         self.organization_id = organization_id
 
     def _visible(self, slide: Slide | None) -> Slide | None:
-        if slide is None or self.organization_id is None or slide.organization_id == self.organization_id:
+        if slide is None or self.organization_id is None or slide.organization_id in (None, self.organization_id):
             return slide
         return None
 
     def _scoped[T: Any](self, statement: Select[T]) -> Select[T]:
         if self.organization_id is None:
             return statement
-        return statement.where(Slide.organization_id == self.organization_id)
+        return statement.where(or_(Slide.organization_id.is_(None), Slide.organization_id == self.organization_id))
 
     def get(self, slide_id: uuid.UUID) -> Slide | None:
         return self._visible(self._session.get(Slide, slide_id))
@@ -56,13 +57,18 @@ class SlideRepository:
     def get_by_storage_key(self, storage_key: str) -> Slide | None:
         return self._session.scalars(select(Slide).where(Slide.storage_key == storage_key)).first()
 
-    def find_duplicate(self, original_filename: str, file_size_bytes: int, organization_id: int) -> Slide | None:
-        """A slide (not failed) of the organization uploaded from a file with the same name and size - most likely
-        the same file."""
+    def find_duplicate(
+        self, original_filename: str, file_size_bytes: int, organization_id: int | None
+    ) -> Slide | None:
+        """A slide (not failed) uploaded from a file with the same name and size - most likely the same file - that
+        the people of `organization_id` see: theirs or a global one (for a global upload, a global one)."""
+        seen: ColumnElement[bool] = Slide.organization_id.is_(None)
+        if organization_id is not None:
+            seen = or_(seen, Slide.organization_id == organization_id)
         return self._session.scalars(
             select(Slide)
             .where(
-                Slide.organization_id == organization_id,
+                seen,
                 Slide.original_filename == original_filename,
                 Slide.file_size_bytes == file_size_bytes,
                 Slide.status != SlideStatus.FAILED,

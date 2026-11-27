@@ -63,6 +63,7 @@ class SlideStatusCount(BaseModel):
 
 
 class AccountCounts(BaseModel):
+    # System and organization administrators.
     admins: int
     annotators: int
     # Accounts whose owner has not logged in and set a password yet.

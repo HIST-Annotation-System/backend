@@ -1,12 +1,13 @@
 import uuid
 from typing import Annotated
 
-from fastapi import Depends
+from fastapi import Depends, Query
 
 from sqlalchemy.orm import Session
 
 from app.dependencies.auth import OrgScopeDep
 from app.dependencies.resources import AppResources, ResourcesDep, SessionDep
+from app.exceptions.errors import NotFoundError
 from app.repositories.cell_types import CellTypeRepository
 from app.repositories.hotspots import HotspotRepository
 from app.repositories.organizations import OrganizationRepository
@@ -18,7 +19,7 @@ from app.services.cell_types import CellTypeService
 from app.services.hotspot_annotations import HotspotAnnotationService
 from app.services.hotspot_reannotation import HotspotReannotationService
 from app.services.hotspots import HotspotService
-from app.services.organizations import OrganizationService
+from app.services.organizations import ORGANIZATION_NOT_FOUND, OrganizationService
 from app.services.priority import PriorityWeightService
 from app.services.slide_files import SlideFileService
 from app.services.slide_ingest import SlideIngestService
@@ -99,7 +100,7 @@ def get_hotspot_reannotation_service(session: SessionDep, scope: OrgScopeDep) ->
 
 
 def get_tag_service(session: SessionDep, scope: OrgScopeDep) -> TagService:
-    return TagService(TagRepository(session), HotspotRepository(session, scope))
+    return TagService(TagRepository(session, scope), HotspotRepository(session, scope))
 
 
 def get_priority_weight_service(session: SessionDep) -> PriorityWeightService:
@@ -110,8 +111,15 @@ def get_organization_service(session: SessionDep) -> OrganizationService:
     return OrganizationService(OrganizationRepository(session))
 
 
-def get_stats_service(session: SessionDep) -> StatsService:
-    return StatsService(StatsRepository(session))
+def get_stats_service(
+    session: SessionDep, scope: OrgScopeDep, organization_id: Annotated[int | None, Query()] = None
+) -> StatsService:
+    """An organization's admin sees their organization; the system admin every one, or the `organization_id` one."""
+    if scope is None and organization_id is not None:
+        scope = OrganizationService(OrganizationRepository(session)).require(organization_id).id
+    elif scope is not None and organization_id not in (None, scope):
+        raise NotFoundError(ORGANIZATION_NOT_FOUND.format(organization_id=organization_id))
+    return StatsService(StatsRepository(session, scope))
 
 
 def get_storage_browser_service(resources: ResourcesDep) -> StorageBrowserService:

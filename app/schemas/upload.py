@@ -18,6 +18,8 @@ class StartUploadRequest(BaseModel):
     allow_duplicate: bool = False
     # Only the system admin chooses; everyone else uploads into their own organization.
     organization_id: int | None = None
+    # Only the system admin: the slide belongs to no organization and every organization sees it.
+    is_global: bool = False
 
 
 class UploadProgressRequest(BaseModel):

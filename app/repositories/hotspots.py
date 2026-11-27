@@ -1,5 +1,5 @@
 import uuid
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from datetime import datetime
 from typing import Any
 
@@ -44,6 +44,13 @@ class HotspotRepository:
     def get_folder(self, folder_id: uuid.UUID) -> HotspotFolder | None:
         folder = self._session.get(HotspotFolder, folder_id)
         return folder if self._in_scope(folder) else None
+
+    def folder_organizations(self, folder_ids: Collection[uuid.UUID]) -> dict[uuid.UUID, int]:
+        """Folder id -> its organization, for the given folders."""
+        rows = self._session.execute(
+            select(HotspotFolder.id, HotspotFolder.organization_id).where(HotspotFolder.id.in_(folder_ids))
+        ).all()
+        return {folder_id: organization_id for folder_id, organization_id in rows}
 
     def get_folder_by_name(self, name: str, organization_id: int) -> HotspotFolder | None:
         return self._session.scalars(

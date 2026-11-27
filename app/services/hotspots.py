@@ -10,8 +10,15 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.constants import NAME_MAX_LENGTH
-from app.exceptions.errors import AppError, ConflictError, InvalidInputError, NotFoundError, StorageError
-from app.models.account import Account
+from app.exceptions.errors import (
+    AppError,
+    ConflictError,
+    ForbiddenError,
+    InvalidInputError,
+    NotFoundError,
+    StorageError,
+)
+from app.models.account import Account, Role
 from app.models.hotspot import Hotspot, HotspotBatch, HotspotBatchStatus, HotspotFeature, HotspotFolder
 from app.models.organization import AgreementMetric
 from app.models.priority_weight import PriorityComponent
@@ -59,6 +66,9 @@ FOLDER_NAME_TAKEN = "A hotspot folder named '{name}' already exists."
 HOTSPOT_NOT_FOUND = "Hotspot {hotspot_id} does not exist."
 BATCH_NOT_FOUND = "Hotspot batch {batch_id} does not exist."
 OTHER_ORGANIZATION_FOLDER = "The folder belongs to another organization."
+MANAGERS_ONLY = "Only administrators can rename or move a hotspot."
+# Renaming and moving hotspots is left to administrators; anyone may mark a hotspot reannotated.
+HOTSPOT_MANAGER_ROLES = (Role.ADMIN, Role.ORG_ADMIN)
 LAYERED_REANNOTATION = "This hotspot is reannotated in layers: it is fully reannotated once enough annotators agree."
 BOX_OUTSIDE_SLIDE = "The box at ({x}, {y}) does not lie wholly inside the slide."
 BATCH_FAILED = "Unexpected error while cutting out the hotspots."
@@ -254,7 +264,9 @@ class HotspotService:
         if existing is not None:
             return self._batch_read(existing), False
         slide = require_slide(self._slides, data.slide_id, ready=True)
-        if self._require_folder(data.folder_id).organization_id != slide.organization_id:
+        # A global slide's hotspots may go to any folder the user sees; an organization's only to its folders.
+        folder_organization = self._require_folder(data.folder_id).organization_id
+        if slide.organization_id is not None and folder_organization != slide.organization_id:
             raise InvalidInputError(OTHER_ORGANIZATION_FOLDER)
         for x, y in data.boxes:
             if x + HOTSPOT_BOX_SIZE > (slide.width or 0) or y + HOTSPOT_BOX_SIZE > (slide.height or 0):
@@ -321,6 +333,10 @@ class HotspotService:
 
     def update_hotspot(self, hotspot_id: uuid.UUID, data: HotspotUpdate, user: Account) -> HotspotRead:
         hotspot = require_hotspot(self._hotspots, hotspot_id)
+        renames = data.name is not None and data.name != hotspot.name
+        moves = data.folder_id is not None and data.folder_id != hotspot.folder_id
+        if (renames or moves) and user.role not in HOTSPOT_MANAGER_ROLES:
+            raise ForbiddenError(MANAGERS_ONLY)
         if data.folder_id is not None and data.folder_id != hotspot.folder_id:
             target = self._require_folder(data.folder_id)
             if target.organization_id != self._require_folder(hotspot.folder_id).organization_id:

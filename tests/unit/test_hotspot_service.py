@@ -8,7 +8,7 @@ from PIL import Image
 from pydantic import ValidationError
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.exceptions.errors import ConflictError, InvalidInputError, NotFoundError
+from app.exceptions.errors import ConflictError, ForbiddenError, InvalidInputError, NotFoundError
 from app.models import Hotspot, Role
 from app.models.hotspot import HotspotBatch, HotspotBatchStatus, HotspotFeature, SegmentationStatus
 from app.models.organization import AgreementMetric
@@ -213,15 +213,29 @@ class TestUpdateAndDelete:
         hotspot = world.hotspot()
         other_folder = world.factory.folder(world.org, "Other")
         read = world.service.update_hotspot(
-            hotspot.id, HotspotUpdate(name="Renamed", folder_id=other_folder.id), world.factory.account()
+            hotspot.id, HotspotUpdate(name="Renamed", folder_id=other_folder.id), world.factory.account(Role.ORG_ADMIN)
         )
         assert (read.name, read.folder_id) == ("Renamed", other_folder.id)
+
+    def test_annotators_cannot_rename_or_move(self, world: World) -> None:
+        hotspot = world.hotspot(layered=False)
+        other_folder = world.factory.folder(world.org, "Other")
+        annotator = world.factory.account()
+        for change in (HotspotUpdate(name="Renamed"), HotspotUpdate(folder_id=other_folder.id)):
+            with pytest.raises(ForbiddenError):
+                world.service.update_hotspot(hotspot.id, change, annotator)
+        # Sending the current values along with the reannotation mark changes nothing, so it is allowed.
+        world.service.update_hotspot(
+            hotspot.id, HotspotUpdate(name=hotspot.name, folder_id=hotspot.folder_id, reannotated=True), annotator
+        )
 
     def test_cannot_move_to_another_organization(self, world: World) -> None:
         hotspot = world.hotspot()
         foreign = world.factory.folder(world.factory.organization())
         with pytest.raises(InvalidInputError, match="another organization"):
-            world.service.update_hotspot(hotspot.id, HotspotUpdate(folder_id=foreign.id), world.factory.account())
+            world.service.update_hotspot(
+                hotspot.id, HotspotUpdate(folder_id=foreign.id), world.factory.account(Role.ADMIN)
+            )
 
     def test_manual_reannotation_mark_on_legacy_hotspots(self, world: World) -> None:
         user = world.factory.account()
@@ -309,6 +323,26 @@ class TestBatches:
         slide = world.slide(width=2000, height=2000)
         with pytest.raises(InvalidInputError, match=r"\(1000, 0\)"):
             world.service.create_batch(self.request(world, slide, [(0, 0), (1000, 0)]))
+
+    def test_global_slide_hotspots_go_to_any_organization_folder(self, world: World) -> None:
+        slide = world.slide(organization_id=None)
+        other = world.factory.organization()
+        foreign_folder = world.factory.folder(other, "Theirs")
+        # Members of another organization see the global slide and cut it into their own folder...
+        request = HotspotBatchCreate(
+            id=uuid.uuid4(), slide_id=slide.id, folder_id=foreign_folder.id, name_prefix="Box", boxes=[(0, 0)]
+        )
+        batch, new = world.scoped(other.id).create_batch(request)
+        assert new and batch.total == 1
+        # ...while an organization's slide still goes only to its own folders.
+        own_slide = world.slide()
+        with pytest.raises(InvalidInputError, match="another organization"):
+            world.service.create_batch(
+                HotspotBatchCreate(
+                    id=uuid.uuid4(), slide_id=own_slide.id, folder_id=foreign_folder.id, name_prefix="B",
+                    boxes=[(0, 0)],
+                )
+            )
 
     def test_slide_must_be_ready(self, world: World) -> None:
         slide = world.slide(status=SlideStatus.PROCESSING)

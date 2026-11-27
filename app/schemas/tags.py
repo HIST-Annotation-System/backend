@@ -40,6 +40,8 @@ class TagRead(BaseModel):
     # Null for tags created by experts.
     dimension: TagDimension | None
     weight: int
+    # Null for global tags, seen by every organization.
+    organization_id: int | None
 
 
 class HotspotTagsBulk(BaseModel):
