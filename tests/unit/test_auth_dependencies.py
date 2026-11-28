@@ -7,6 +7,7 @@ from starlette.requests import Request
 
 from app.dependencies.auth import (
     RequireRole,
+    get_authenticated_user,
     get_current_user,
     get_org_scope,
     require_admin,
@@ -16,8 +17,8 @@ from app.dependencies.auth import (
 from app.models import Role
 
 
-def user(role: Role, organization_id: int | None = 1) -> Any:
-    return SimpleNamespace(id=1, role=role, organization_id=organization_id)
+def user(role: Role, organization_id: int | None = 1, is_first_login: bool = False) -> Any:
+    return SimpleNamespace(id=1, role=role, organization_id=organization_id, is_first_login=is_first_login)
 
 
 def request(cookies: dict[str, str] | None = None) -> Request:
@@ -34,6 +35,18 @@ class FakeAuth:
     def get_current_user_from_token(self, token: str) -> Any:
         self.seen.append(token)
         return self.valid.get(token)
+
+
+class TestFirstLogin:
+    def test_an_account_on_its_temporary_password_is_refused(self) -> None:
+        auth = FakeAuth({"tok": user(Role.ADMIN, is_first_login=True)})
+        with pytest.raises(HTTPException) as error:
+            get_current_user(request(), "tok", auth)  # type: ignore[arg-type]
+        assert error.value.status_code == 403
+
+    def test_but_it_may_still_read_itself_set_up_and_sign_out(self) -> None:
+        account = user(Role.ANNOTATOR, is_first_login=True)
+        assert get_authenticated_user(request(), "tok", FakeAuth({"tok": account})) is account  # type: ignore[arg-type]
 
 
 class TestGetCurrentUser:

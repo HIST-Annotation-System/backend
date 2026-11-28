@@ -1,7 +1,7 @@
 import uuid
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Annotated, cast
 
 from fastapi import Depends, Request
@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.celery_app import build_celery_app
 from app.core.config import Settings
+from app.services.login_throttle import LoginThrottle
 from app.services.segmentation import (
     JOBS_QUEUE,
     SCHEMA_VERSION,
@@ -56,6 +57,7 @@ class AppResources:
     hotspot_pool: ThreadPoolExecutor
     # None unless SEGMENTATION_ENABLED: hotspots then wait as `pending` for a stack that has a worker.
     segmentation_dispatcher: SegmentationDispatcher | None = None
+    login_throttle: LoginThrottle = field(default_factory=LoginThrottle)
 
     def close(self) -> None:
         if self.segmentation_dispatcher is not None:
