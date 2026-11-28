@@ -44,6 +44,14 @@ class SlidePreparingError(AppError):
     headers = {"Retry-After": "5", "Cache-Control": "no-store"}
 
 
+class TooManyRequestsError(AppError):
+    status_code = status.HTTP_429_TOO_MANY_REQUESTS
+
+    def __init__(self, message: str, retry_after_seconds: int, code: str | None = None) -> None:
+        super().__init__(message, code)
+        self.headers = {"Retry-After": str(retry_after_seconds)}
+
+
 class InsufficientStorageError(AppError):
     status_code = status.HTTP_507_INSUFFICIENT_STORAGE
 

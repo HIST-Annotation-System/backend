@@ -12,6 +12,7 @@ from app.repositories.accounts import AccountRepository, RefreshTokenRepository
 from app.repositories.profiles import ProfileRepository
 from app.services.accounts import AccountService
 from app.services.auth import AuthService
+from app.services.login_throttle import LoginThrottle
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl=f"{settings.API_V1_STR}/auth/login", auto_error=False)
 
@@ -33,11 +34,20 @@ AuthServiceDep = Annotated[AuthService, Depends(get_auth_service)]
 AccountServiceDep = Annotated[AccountService, Depends(get_account_service)]
 
 
-def get_current_user(
+def get_login_throttle(resources: ResourcesDep) -> LoginThrottle:
+    return resources.login_throttle
+
+
+LoginThrottleDep = Annotated[LoginThrottle, Depends(get_login_throttle)]
+
+
+def get_authenticated_user(
     request: Request,
     token: Annotated[str | None, Depends(oauth2_scheme)],
     auth_service: AuthServiceDep,
 ) -> Account:
+    """Whoever the access token belongs to, including an account that hasn't set up its profile yet (still on its
+    temporary password). Only for what such an account needs: reading itself, setting up the profile, signing out."""
     bearer_or_cookie_token = token or request.cookies.get(ACCESS_TOKEN_COOKIE)
     if not bearer_or_cookie_token:
         raise HTTPException(
@@ -53,6 +63,21 @@ def get_current_user(
             detail="Could not validate credentials",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    return user
+
+
+AuthenticatedUserDep = Annotated[Account, Depends(get_authenticated_user)]
+
+def get_current_user(
+    request: Request,
+    token: Annotated[str | None, Depends(oauth2_scheme)],
+    auth_service: AuthServiceDep,
+) -> Account:
+    """The signed-in user, once they have replaced their temporary password (`is_first_login` is cleared by
+    /auth/setup-profile). Until then only the `AuthenticatedUserDep` endpoints accept them."""
+    user = get_authenticated_user(request, token, auth_service)
+    if user.is_first_login:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Profile setup required")
     return user
 
 

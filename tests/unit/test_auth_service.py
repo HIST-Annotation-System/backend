@@ -3,12 +3,14 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from fastapi import Response
 from jose import jwt
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings
 from app.models import Role
 from app.repositories.accounts import AccountRepository, RefreshTokenRepository
-from app.services.auth import AuthService
+from app.models.account import RefreshToken
+from app.services.auth import REFRESH_REUSE_GRACE, AuthService, RefreshOutcome, hash_refresh_token
 from conftest import Factory, make_settings
 
 
@@ -69,55 +71,155 @@ class TestAccessTokens:
 
 
 class TestRefreshTokens:
-    def test_create_resolve_revoke(self, auth: AuthService, factory: Factory) -> None:
+    def test_only_a_hash_of_the_token_is_stored(self, auth: AuthService, factory: Factory, session: Session) -> None:
+        token = auth.create_refresh_token(factory.account().id)
+        assert len(token) >= 32
+        stored = session.execute(select(RefreshToken)).scalar_one()
+        assert stored.token_hash == hash_refresh_token(token) != token
+
+    def test_rotation_spends_the_token(self, auth: AuthService, factory: Factory) -> None:
         account = factory.account()
         token = auth.create_refresh_token(account.id)
-        assert len(token.token) >= 32
-        assert auth.resolve_refresh_token(token.token) is account
-        assert auth.revoke_refresh_token(token.token) is True
-        assert auth.resolve_refresh_token(token.token) is None
+        result = auth.rotate_refresh_token(token)
+        assert result.outcome is RefreshOutcome.ROTATED and result.account is account
+        # Presented again at once: a race between two tabs, refused without ending the account's other sessions.
+        other = auth.create_refresh_token(account.id)
+        assert auth.rotate_refresh_token(token).outcome is RefreshOutcome.INVALID
+        assert auth.rotate_refresh_token(other).outcome is RefreshOutcome.ROTATED
+
+    def test_reuse_after_the_grace_period_ends_every_session(
+        self, auth: AuthService, factory: Factory, session: Session
+    ) -> None:
+        account = factory.account()
+        stolen = auth.create_refresh_token(account.id)
+        assert auth.rotate_refresh_token(stolen).outcome is RefreshOutcome.ROTATED
+        current = auth.create_refresh_token(account.id)
+        spent = session.execute(
+            select(RefreshToken).where(RefreshToken.token_hash == hash_refresh_token(stolen))
+        ).scalar_one()
+        spent.revoked_at = datetime.now(UTC) - REFRESH_REUSE_GRACE - timedelta(seconds=1)
+        session.flush()
+
+        assert auth.rotate_refresh_token(stolen).outcome is RefreshOutcome.REUSED
+        assert auth.rotate_refresh_token(current).outcome is RefreshOutcome.INVALID
+
+    def test_reuse_only_ends_the_sessions_of_that_account(
+        self, auth: AuthService, factory: Factory, session: Session
+    ) -> None:
+        victim, bystander = factory.account(), factory.account()
+        stolen = auth.create_refresh_token(victim.id)
+        auth.rotate_refresh_token(stolen)
+        theirs = auth.create_refresh_token(bystander.id)
+        for row in session.execute(select(RefreshToken).where(RefreshToken.revoked_at.is_not(None))).scalars():
+            row.revoked_at = datetime.now(UTC) - REFRESH_REUSE_GRACE * 2
+        session.flush()
+        assert auth.rotate_refresh_token(stolen).outcome is RefreshOutcome.REUSED
+        assert auth.rotate_refresh_token(theirs).outcome is RefreshOutcome.ROTATED
 
     def test_unknown_token(self, auth: AuthService) -> None:
-        assert auth.resolve_refresh_token("nope") is None
+        assert auth.rotate_refresh_token("nope").outcome is RefreshOutcome.INVALID
         assert auth.revoke_refresh_token("nope") is False
 
     def test_expired_token(self, auth: AuthService, factory: Factory, session: Session) -> None:
         token = auth.create_refresh_token(factory.account().id)
-        token.expires_at = datetime.now(UTC) - timedelta(seconds=1)
+        stored = session.execute(select(RefreshToken)).scalar_one()
+        stored.expires_at = datetime.now(UTC) - timedelta(seconds=1)
         session.flush()
-        assert auth.resolve_refresh_token(token.token) is None
+        assert auth.rotate_refresh_token(token).outcome is RefreshOutcome.INVALID
+
+    def test_revoked_token_no_longer_rotates(self, auth: AuthService, factory: Factory) -> None:
+        token = auth.create_refresh_token(factory.account().id)
+        assert auth.revoke_refresh_token(token) is True
+        assert auth.revoke_refresh_token(token) is False
+        assert auth.rotate_refresh_token(token).outcome is RefreshOutcome.INVALID
+
+    def test_revoke_all(self, auth: AuthService, factory: Factory) -> None:
+        account = factory.account()
+        tokens = [auth.create_refresh_token(account.id) for _ in range(2)]
+        auth.revoke_all_refresh_tokens(account.id)
+        assert all(auth.rotate_refresh_token(token).outcome is RefreshOutcome.INVALID for token in tokens)
+
+    def test_new_session_deletes_expired_tokens(self, auth: AuthService, factory: Factory, session: Session) -> None:
+        account = factory.account()
+        auth.create_refresh_token(account.id)
+        stored = session.execute(select(RefreshToken)).scalar_one()
+        stored.expires_at = datetime.now(UTC) - timedelta(seconds=1)
+        session.flush()
+        auth.create_refresh_token(account.id)
+        assert len(session.execute(select(RefreshToken)).scalars().all()) == 1
 
     def test_tokens_are_unique(self, auth: AuthService, factory: Factory) -> None:
         account = factory.account()
-        assert auth.create_refresh_token(account.id).token != auth.create_refresh_token(account.id).token
+        assert auth.create_refresh_token(account.id) != auth.create_refresh_token(account.id)
+
+
+class TestAuthenticate:
+    def test_right_and_wrong_password(self, auth: AuthService, factory: Factory) -> None:
+        account = factory.account(hashed_password=auth.get_password_hash("pw"))
+        assert auth.authenticate(account.username, "pw") is account
+        assert auth.authenticate(account.username, "nope") is None
+
+    def test_unknown_username_still_checks_a_password(
+        self, auth: AuthService, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        checked: list[str] = []
+        real = auth.verify_password
+
+        def verify(plain: str, hashed: str) -> bool:
+            checked.append(plain)
+            return real(plain, hashed)
+
+        monkeypatch.setattr(auth, "verify_password", verify)
+        assert auth.authenticate("nobody", "pw") is None
+        assert checked == ["pw"]
 
 
 class TestCookies:
-    def cookies(self, response: Response) -> dict[str, str]:
+    def cookies(self, response: Response) -> dict[tuple[str, str], str]:
+        """Set-Cookie headers by (name, path)."""
         headers = [value.decode() for key, value in response.raw_headers if key == b"set-cookie"]
-        return {header.split("=", 1)[0]: header for header in headers}
+        found = {}
+        for header in headers:
+            path = next(part.split("=", 1)[1] for part in header.split("; ") if part.startswith("Path="))
+            found[(header.split("=", 1)[0], path)] = header
+        return found
 
     def test_access_and_refresh_cookies_are_http_only(self, auth: AuthService, settings: Settings) -> None:
         response = Response()
         auth.set_token_cookies(response, "acc", "ref")
         cookies = self.cookies(response)
-        assert set(cookies) == {"access_token", "refresh_token"}
-        for cookie in cookies.values():
+        access, refresh = cookies[("access_token", "/")], cookies[("refresh_token", "/api/v1/auth")]
+        for cookie in (access, refresh):
             assert "HttpOnly" in cookie
             assert "SameSite=lax" in cookie
-        assert f"Max-Age={settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60}" in cookies["access_token"]
-        assert f"Max-Age={settings.REFRESH_TOKEN_EXPIRE_DAYS * 86400}" in cookies["refresh_token"]
+        assert f"Max-Age={settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60}" in access
+        assert f"Max-Age={settings.REFRESH_TOKEN_EXPIRE_DAYS * 86400}" in refresh
 
-    def test_cookies_are_https_only_where_configured(self, auth: AuthService, settings: Settings) -> None:
+    def test_a_refresh_cookie_left_on_the_old_path_is_removed(self, auth: AuthService) -> None:
         response = Response()
         auth.set_token_cookies(response, "acc", "ref")
-        assert all("Secure" not in cookie for cookie in self.cookies(response).values())
+        assert "Max-Age=0" in self.cookies(response)[("refresh_token", "/")]
+
+    def test_cookies_are_https_only_where_configured(self, auth: AuthService, settings: Settings) -> None:
+        keys = [("access_token", "/"), ("refresh_token", "/api/v1/auth")]
+        response = Response()
+        auth.set_token_cookies(response, "acc", "ref")
+        cookies = self.cookies(response)
+        assert all("Secure" not in cookies[key] for key in keys)
         settings.COOKIE_SECURE = True
         response = Response()
         auth.set_token_cookies(response, "acc", "ref")
-        assert all("Secure" in cookie for cookie in self.cookies(response).values())
+        cookies = self.cookies(response)
+        assert all("Secure" in cookies[key] for key in keys)
 
     def test_refresh_cookie_is_optional(self, auth: AuthService) -> None:
         response = Response()
         auth.set_token_cookies(response, "acc")
-        assert set(self.cookies(response)) == {"access_token"}
+        assert set(self.cookies(response)) == {("access_token", "/")}
+
+    def test_clearing_removes_every_auth_cookie(self, auth: AuthService) -> None:
+        response = Response()
+        auth.clear_token_cookies(response)
+        cookies = self.cookies(response)
+        assert set(cookies) == {("access_token", "/"), ("refresh_token", "/api/v1/auth"), ("refresh_token", "/")}
+        assert all("Max-Age=0" in cookie for cookie in cookies.values())

@@ -107,6 +107,8 @@ class AccountService:
 
         if data.password:
             target_account.hashed_password = self.auth_service.get_password_hash(data.password)
+            # Whoever signed in with the old password (or holds a stolen session) has to sign in again.
+            self.auth_service.revoke_all_refresh_tokens(target_account.id)
 
         if target_account.profile:
             if data.first_name is not None:

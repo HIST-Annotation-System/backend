@@ -42,10 +42,14 @@ class RefreshToken(Base):
     __tablename__ = "refresh_tokens"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id", ondelete="CASCADE"), nullable=False)
-    token: Mapped[str] = mapped_column(String, unique=True, index=True, nullable=False)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id", ondelete="CASCADE"), index=True, nullable=False)
+    # SHA-256 (hex) of the token: the token itself is only ever in the client's cookie, so reading this table doesn't
+    # give anyone a session.
+    token_hash: Mapped[str] = mapped_column(String, unique=True, index=True, nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    is_revoked: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # Set when the token was used (rotated) or the session ended. A revoked token is kept until it expires, so that
+    # its reuse can be recognised as theft.
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     # Relationships
     account: Mapped["Account"] = relationship("Account", back_populates="refresh_tokens")
